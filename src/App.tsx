@@ -107,7 +107,7 @@ export function App() {
         })}</nav>
 
       </div>
-      <InstallApp compact />
+      <InstallApp compact authenticated />
       {user.role === 'admin' && <button className="invite-button" onClick={() => setModal('invite')}><UserPlus size={17} />Пригласить друзей<ArrowUpRight size={15} /></button>}
       {call && <div className="voice-dock"><button onClick={() => setSelected(call.channel.id)}><Signal size={17} /><span>В голосовой комнате<small>{call.channel.name}</small></span></button><button aria-label="Отключиться от звонка" title="Отключиться" onClick={leave}><PhoneOff size={18} /></button></div>}
       <div className="profile"><Avatar name={user.displayName} /><div className="profile-name"><strong>{user.displayName}</strong><span><i className={connected ? 'online-dot' : 'offline-dot'} />{connected ? 'На связи' : 'Переподключение…'}</span></div><button className="icon-button" title="Настройки" aria-label="Настройки" onClick={() => setModal('settings')}><Settings2 size={18} /></button><button className="icon-button" title="Выйти из аккаунта" aria-label="Выйти из аккаунта" onClick={() => void logout()}><LogOut size={17} /></button></div>

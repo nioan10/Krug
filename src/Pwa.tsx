@@ -18,23 +18,26 @@ export const checkForAppUpdate = () => { void updates?.check(); };
 const noUpdate: UpdateState = { available: false, queued: false, applying: false, error: '' };
 const noSubscription = () => () => {};
 const getNoUpdate = () => noUpdate;
-export function InstallApp({ compact = false }: { compact?: boolean }) {
+export function InstallApp({ compact = false, authenticated = false }: { compact?: boolean; authenticated?: boolean }) {
   const state = useSyncExternalStore(subscribe, () => snapshot);
   const [help, setHelp] = useState(false);
-  async function install() {
-    if (!prompt) { setHelp(true); return; }
+  async function installPwa() {
+    if (!prompt) return;
     const event = prompt; prompt = null;
     try { const result = await event.prompt(); if (result.outcome === 'accepted') update({ installed: true }); }
     catch { setHelp(true); }
     finally { update({ ready: false }); }
   }
   return <>
-    {!state.installed && <button className={compact ? 'install-sidebar' : 'install-auth'} onClick={() => void install()}><Download size={16} />Установить приложение</button>}
-    {help && <Modal title="Установить Круг" onClose={() => setHelp(false)}><div className="install-help"><p>Приложение открывается в отдельном окне. Для звонков и переписки нужен интернет.</p>
-      <h3>Windows, Linux, Android</h3><p>Откройте этот адрес в Chrome или Edge. Нажмите значок установки в адресной строке или выберите «Установить приложение» в меню браузера.</p>
+    {!window.krugDesktop && <button className={compact ? 'install-sidebar' : 'install-auth'} onClick={() => setHelp(true)}><Download size={16} />Установить приложение</button>}
+    {help && <Modal title="Установить Округ" onClose={() => setHelp(false)}><div className="install-help"><p>Приложение открывается в отдельном окне. Для звонков и переписки нужен интернет.</p>
+      <h3>Windows</h3><p>Установите приложение для компьютера: в нём можно передавать звук выбранной программы вместе с демонстрацией.</p>
+      {authenticated ? <a className="primary install-download" href="/api/desktop-installer" download><Download size={16} />Скачать Округ для Windows</a> : <p className="tiny">Войдите в аккаунт, чтобы скачать приложение для Windows.</p>}
+      <h3>Установка через браузер</h3><p>На Windows, Linux и Android откройте этот адрес в Chrome или Edge и выберите «Установить приложение» в меню браузера.</p>
+      {state.ready && <button className="secondary install-pwa-button" onClick={() => void installPwa()}><Download size={16} />Установить из браузера</button>}
       <h3>iPhone и iPad</h3><p>Откройте адрес в Safari → «Поделиться» → «На экран Домой».</p>
       <h3>Mac</h3><p>В Safari: «Файл» → «Добавить в Dock». Также можно установить через Chrome.</p>
-      <p className="muted">Если вы открыли Круг внутри другого приложения, скопируйте адрес в обычный браузер. Установка доступна по HTTPS или на localhost.</p>
+      <p className="muted">Если вы открыли Округ внутри другого приложения, скопируйте адрес в обычный браузер. Установка через браузер доступна по HTTPS или на localhost.</p>
     </div></Modal>}
   </>;
 }
