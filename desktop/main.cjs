@@ -2,7 +2,8 @@ const { app, BrowserWindow, session, desktopCapturer, ipcMain, dialog } = requir
 const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const path = require('node:path');
-const ORIGIN = 'https://chat.nioservices.website';
+// Local development is explicit and is unavailable in packaged releases.
+const ORIGIN = !app.isPackaged && process.env.KRUG_DESKTOP_DEV === '1' ? 'http://127.0.0.1:5173' : 'https://chat.nioservices.website';
 const helper = app.isPackaged ? path.join(process.resourcesPath, 'capture', 'Krug.Capture.exe') : path.join(__dirname, 'capture', 'publish', 'Krug.Capture.exe');
 let mainWindow, picker, selectedPid, capture;
 function fromMain(event) {
@@ -63,7 +64,7 @@ async function createWindow() {
       callback({ video: choice.source });
     } catch { callback(null); }
   });
-  mainWindow = new BrowserWindow({ width: 1280, height: 820, minWidth: 600, minHeight: 500, title: 'Круг', backgroundColor: '#14121c', webPreferences: { session: ses, sandbox: true, contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, 'preload.cjs') } });
+  mainWindow = new BrowserWindow({ width: 1280, height: 820, minWidth: 600, minHeight: 500, title: 'Круг', backgroundColor: '#14121c', show: app.isPackaged || process.env.KRUG_DESKTOP_TEST !== '1', webPreferences: { session: ses, sandbox: true, contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, 'preload.cjs') } });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   mainWindow.webContents.on('will-navigate', (event, url) => { try { if (new URL(url).origin !== ORIGIN) event.preventDefault(); } catch { event.preventDefault(); } });
   mainWindow.webContents.on('did-start-navigation', (_e, _url, _inPlace, isMainFrame) => { if (isMainFrame) { stopAudio(); selectedPid = undefined; } });

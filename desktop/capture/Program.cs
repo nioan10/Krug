@@ -17,6 +17,43 @@ static class Program
     [return: MarshalAs(UnmanagedType.Bool)]
     static extern bool IsWindow(nint window);
 
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct ProcessEntry
+    {
+        public uint size, usage, processId;
+        public nint defaultHeapId;
+        public uint moduleId, threads, parentProcessId;
+        public int basePriority;
+        public uint flags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string executable;
+    }
+    [DllImport("kernel32.dll", SetLastError = true)] static extern nint CreateToolhelp32Snapshot(uint flags, uint id);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] static extern bool Process32FirstW(nint snapshot, ref ProcessEntry entry);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] static extern bool Process32NextW(nint snapshot, ref ProcessEntry entry);
+    [DllImport("kernel32.dll")] [return: MarshalAs(UnmanagedType.Bool)] static extern bool CloseHandle(nint handle);
+
+    static bool IsAncestor(uint candidate)
+    {
+        var snapshot = CreateToolhelp32Snapshot(2, 0);
+        if (snapshot == new nint(-1)) throw new InvalidOperationException("Cannot verify process ancestry.");
+        try
+        {
+            var parents = new Dictionary<uint, uint>();
+            var entry = new ProcessEntry { size = (uint)Marshal.SizeOf<ProcessEntry>(), executable = "" };
+            if (!Process32FirstW(snapshot, ref entry)) throw new InvalidOperationException("Cannot enumerate process ancestry.");
+            do { parents[entry.processId] = entry.parentProcessId; } while (Process32NextW(snapshot, ref entry));
+            var current = (uint)Environment.ProcessId;
+            var seen = new HashSet<uint>();
+            while (current != 0 && seen.Add(current))
+            {
+                if (current == candidate) return true;
+                if (!parents.TryGetValue(current, out current)) break;
+            }
+            return false;
+        }
+        finally { CloseHandle(snapshot); }
+    }
+
     static async Task<int> Main(string[] args)
     {
         if (args.Length == 2 && args[0] == "--window" && long.TryParse(args[1], out var handle) && handle > 0)
@@ -29,6 +66,7 @@ static class Program
             }
             try
             {
+                if (IsAncestor(processId)) throw new InvalidOperationException("Cannot capture the client's own process tree.");
                 using var process = Process.GetProcessById((int)processId);
                 Console.WriteLine($"{processId} {process.StartTime.ToUniversalTime().Ticks}");
             }
@@ -49,6 +87,7 @@ static class Program
         try
         {
             using var target = Process.GetProcessById(pid);
+            if (IsAncestor((uint)pid)) throw new InvalidOperationException("Cannot capture the client's own process tree.");
             // Keep a handle to the original process: a reused PID must never become a new target.
             _ = target.Handle;
             if (target.StartTime.ToUniversalTime().Ticks != expectedStart) throw new InvalidOperationException("Selected process has changed.");
