@@ -2,10 +2,13 @@ const { app, BrowserWindow, session, desktopCapturer, ipcMain, dialog } = requir
 const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const path = require('node:path');
+const { createUpdateController } = require('./update-controller.cjs');
 // Local development is explicit and is unavailable in packaged releases.
 const ORIGIN = !app.isPackaged && process.env.KRUG_DESKTOP_DEV === '1' ? 'http://127.0.0.1:5173' : 'https://chat.nioservices.website';
 const helper = app.isPackaged ? path.join(process.resourcesPath, 'capture', 'Krug.Capture.exe') : path.join(__dirname, 'capture', 'publish', 'Krug.Capture.exe');
 let mainWindow, picker, selectedPid, capture;
+let updateStatus = { state: 'idle' }, updateController;
+function reportUpdate(status) { updateStatus = status; if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('krug:update-status', status); }
 function fromMain(event) {
   try { return event.sender === mainWindow?.webContents && event.senderFrame === mainWindow.webContents.mainFrame && new URL(event.senderFrame.url).origin === ORIGIN; } catch { return false; }
 }
@@ -66,9 +69,10 @@ async function createWindow() {
     } catch { callback(null); }
   });
   mainWindow = new BrowserWindow({ width: 1280, height: 820, minWidth: 600, minHeight: 500, title: 'Круг', backgroundColor: '#14121c', show: app.isPackaged || process.env.KRUG_DESKTOP_TEST !== '1', webPreferences: { session: ses, sandbox: true, contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, 'preload.cjs') } });
+  configureUpdates();
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   mainWindow.webContents.on('will-navigate', (event, url) => { try { if (new URL(url).origin !== ORIGIN) event.preventDefault(); } catch { event.preventDefault(); } });
-  mainWindow.webContents.on('did-start-navigation', (_e, _url, _inPlace, isMainFrame) => { if (isMainFrame) { stopAudio(); selectedPid = undefined; } });
+  mainWindow.webContents.on('did-start-navigation', (_e, _url, _inPlace, isMainFrame) => { if (isMainFrame) { stopAudio(); selectedPid = undefined; updateController?.resetCallState(); } });
   mainWindow.on('closed', () => { stopAudio(); selectedPid = undefined; });
   await mainWindow.loadURL(ORIGIN);
 }
@@ -94,5 +98,37 @@ ipcMain.handle('krug:audio-start', async event => {
   return ready;
 });
 ipcMain.handle('krug:audio-stop', event => { if (!fromMain(event)) throw new Error('Invalid sender'); selectedPid = undefined; stopAudio(); });
+ipcMain.handle('krug:call-state', (event, active) => { if (!fromMain(event) || typeof active !== 'boolean') throw new Error('Invalid sender or call state'); updateController?.setCallActive(active); });
+ipcMain.handle('krug:update-state', event => { if (!fromMain(event)) throw new Error('Invalid sender'); return updateStatus; });
+function configureUpdates() {
+  if (!app.isPackaged) return;
+  const { autoUpdater } = require('electron-updater');
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = false;
+  autoUpdater.disableDifferentialDownload = true;
+  updateController = createUpdateController({ install: () => autoUpdater.quitAndInstall(true, true), report: reportUpdate });
+  let checking = false, downloading = false, pending = false;
+  autoUpdater.on('update-available', () => { downloading = true; reportUpdate({ state: 'downloading', percent: 0 }); });
+  autoUpdater.on('update-not-available', () => reportUpdate({ state: 'idle' }));
+  autoUpdater.on('download-progress', info => reportUpdate({ state: 'downloading', percent: Math.max(0, Math.min(100, Math.round(info.percent))) }));
+  autoUpdater.on('update-downloaded', () => { downloading = false; pending = true; updateController.downloaded(); });
+  autoUpdater.on('error', () => { if (downloading || pending) reportUpdate({ state: 'error' }); downloading = false; pending = false; });
+  async function check() {
+    if (checking || downloading || pending || !mainWindow || mainWindow.isDestroyed()) return;
+    checking = true;
+    try {
+      const response = await mainWindow.webContents.session.fetch(`${ORIGIN}/api/desktop-updates/access`, { credentials: 'include' });
+      if (!response.ok) return;
+      const data = await response.json();
+      if (typeof data.token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(data.token)) return;
+      autoUpdater.requestHeaders = { Authorization: `Bearer ${data.token}` };
+      await autoUpdater.checkForUpdates();
+    } catch { /* Retry later; a missing feed is normal until the first release. */ }
+    finally { checking = false; }
+  }
+  mainWindow.webContents.on('did-finish-load', () => void check());
+  mainWindow.on('focus', () => void check());
+  setInterval(() => void check(), 10 * 60 * 1000).unref();
+}
 app.whenReady().then(createWindow);
 app.on('window-all-closed', () => app.quit());

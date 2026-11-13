@@ -9,7 +9,11 @@ type DesktopBridge = {
   stopAudio(): Promise<void>;
   onAudio(callback: (data: Uint8Array) => void): () => void;
   onAudioEnded(callback: () => void): () => void;
+  setCallActive(active: boolean): Promise<void>;
+  getUpdateState(): Promise<DesktopUpdateStatus>;
+  onUpdate(callback: (status: DesktopUpdateStatus) => void): () => void;
 };
+export type DesktopUpdateStatus = { state: 'idle' | 'downloading' | 'ready' | 'queued' | 'installing' | 'error'; percent?: number };
 declare global { interface Window { krugDesktop?: DesktopBridge } }
 
 // Bounded buffer: a slow renderer drops old samples instead of building latency.

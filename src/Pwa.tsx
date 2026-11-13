@@ -2,6 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 import { Check, Download, RefreshCw } from 'lucide-react';
 import { Modal } from './ui';
 import { createUpdateManager, type UpdateState } from './pwa-updates';
+import type { DesktopUpdateStatus } from './DesktopShare';
 
 interface InstallPrompt extends Event { prompt(): Promise<{ outcome: 'accepted' | 'dismissed' }> }
 let prompt: InstallPrompt | null = null;
@@ -45,4 +46,19 @@ export function AppUpdate({ inCall }: { inCall: boolean }) {
   const message = state.error || (state.queued ? 'Обновление установится, когда вы выйдете из комнаты.' : inCall ? 'Доступно обновление. Можно установить его после звонка.' : 'Доступна новая версия Круга.');
   const label = state.applying ? 'Устанавливаем…' : state.queued ? 'Отменить' : inCall ? 'Обновить после звонка' : 'Обновить';
   return <div className="update-banner" role="status"><Check size={15} /><span>{message}</span><button disabled={state.applying} onClick={() => { if (state.queued) updates?.cancel(); else void updates?.request(inCall); }}><RefreshCw size={13} />{label}</button></div>;
+}
+
+export function DesktopUpdate() {
+  const [status, setStatus] = useState<DesktopUpdateStatus>({ state: 'idle' });
+  useEffect(() => {
+    const bridge = window.krugDesktop;
+    if (!bridge) return;
+    let received = false;
+    const unsubscribe = bridge.onUpdate(next => { received = true; setStatus(next); });
+    void bridge.getUpdateState().then(next => { if (!received) setStatus(next); }).catch(() => {});
+    return unsubscribe;
+  }, []);
+  if (status.state === 'idle') return null;
+  const message = status.state === 'downloading' ? `Загружаем обновление приложения: ${status.percent ?? 0}%` : status.state === 'queued' ? 'Обновление приложения установится после выхода из звонка.' : status.state === 'error' ? 'Не удалось загрузить обновление приложения. Повторим попытку позже.' : 'Устанавливаем обновление приложения…';
+  return <div className="update-banner" role="status"><RefreshCw size={15} /><span>{message}</span></div>;
 }

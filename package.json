@@ -25,11 +25,34 @@
   "build": {
     "appId": "website.nioservices.krug",
     "productName": "Круг",
-    "directories": { "output": "release" },
-    "files": ["desktop/main.cjs", "desktop/preload.cjs", "desktop/picker*", "package.json", "!node_modules/**/*"],
-    "extraResources": [{ "from": "desktop/capture/publish", "to": "capture" }],
-    "win": { "target": "nsis", "icon": "public/icons/icon-512.png", "signAndEditExecutable": false },
-    "nsis": { "oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true }
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "desktop/main.cjs",
+      "desktop/update-controller.cjs",
+      "desktop/preload.cjs",
+      "desktop/picker*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "desktop/capture/publish",
+        "to": "capture"
+      }
+    ],
+    "publish": [{ "provider": "generic", "url": "https://chat.nioservices.website/api/desktop-updates" }],
+    "artifactName": "Krug-Setup-${version}.${ext}",
+    "win": {
+      "target": "nsis",
+      "icon": "public/icons/icon-512.png",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
   },
   "dependencies": {
     "@fastify/cookie": "11.1.5",
@@ -38,6 +61,7 @@
     "@fastify/static": "10.1.10",
     "@fastify/websocket": "11.3.7",
     "@livekit/components-react": "2.9.25",
+    "electron-updater": "6.8.11",
     "fastify": "5.12.8",
     "livekit-client": "2.24.0",
     "livekit-server-sdk": "2.19.3",

@@ -3,7 +3,7 @@ import { ArrowUpRight, AudioLines, ChevronDown, Hash, Headphones, LockKeyhole, L
 import { api, errorText, HttpError, type Channel, type User, type VoicePresence } from './api';
 import { emit, type ServerEvent } from './events';
 import { Auth } from './Auth';
-import { InstallApp, AppUpdate, checkForAppUpdate } from './Pwa';
+import { InstallApp, AppUpdate, DesktopUpdate, checkForAppUpdate } from './Pwa';
 import { Chat } from './Chat';
 import { Voice, type Call } from './Voice';
 import { Avatar, Logo } from './ui';
@@ -22,6 +22,7 @@ export function App() {
   const [connected, setConnected] = useState(false);
   const [call, setCall] = useState<Call | null>(null);
   const [joining, setJoining] = useState(false);
+  useEffect(() => { void window.krugDesktop?.setCallActive(Boolean(call) || joining).catch(() => {}); }, [call, joining]);
   const [toast, setToast] = useState('');
   const [modal, setModal] = useState<'invite' | 'channel' | 'settings' | null>(null);
   const [mobileNav, setMobileNav] = useState(false);
@@ -92,7 +93,7 @@ export function App() {
   const toastView = toast && <div className="toast" role="status"><span>{toast}</span><button aria-label="Закрыть уведомление" onClick={() => setToast('')}><X size={16} /></button></div>;
   if (booting) return <div className="loading-page"><Logo /><span>Загрузка…</span></div>;
   if (bootError) return <div className="loading-page"><Logo /><p>{bootError}</p><button className="primary" onClick={() => void boot()}>Попробовать снова</button></div>;
-  if (!user) return <><AppUpdate inCall={false} /><Auth onLogin={setUser} />{toastView}</>;
+  if (!user) return <><DesktopUpdate /><AppUpdate inCall={false} /><Auth onLogin={setUser} />{toastView}</>;
   return <div className="app-shell">
     {mobileNav && <button className="nav-scrim" aria-label="Закрыть меню" onClick={() => setMobileNav(false)} />}
     <aside className={`sidebar ${mobileNav ? 'mobile-open' : ''}`}><div className="sidebar-brand"><Logo /><span className="version">BETA</span></div>
@@ -113,7 +114,7 @@ export function App() {
     </aside>
     <main className="main-app">
       <header className="topbar"><button className="mobile-menu icon-button" aria-label="Открыть меню" onClick={() => setMobileNav(true)}><Menu size={22} /></button><span className="header-channel-icon">{current?.kind === 'voice' ? <Volume2 size={22} /> : <Hash size={22} />}</span><h1>{current?.name || 'Ваши каналы'}</h1><span className="header-divider" /><p>{current?.description}</p><div className="header-actions">{user.role === 'admin' && current && <button className="icon-button" title="Настройки канала" aria-label="Настройки канала" onClick={() => setModal('settings')}><Settings2 size={19} /></button>}<span className="private-badge"><LockKeyhole size={13} />По приглашению</span>{current?.kind === 'voice' && <button className={`icon-button ${showChat ? 'active' : ''}`} title="Чат комнаты" aria-label="Показать или скрыть чат" aria-pressed={showChat} onClick={() => setShowChat(!showChat)}><MessageSquare size={19} /></button>}</div></header>
-      <AppUpdate inCall={Boolean(call)} />
+      <DesktopUpdate /><AppUpdate inCall={Boolean(call)} />
       {!connected && <div className="reconnect-banner">Восстанавливаем связь с чатом. Новые сообщения появятся после подключения.</div>}
       {current ? <div className={`workspace ${current.kind === 'text' ? 'text-workspace' : ''}`}>
         <div className="center-pane">
