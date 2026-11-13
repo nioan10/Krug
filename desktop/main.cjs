@@ -116,7 +116,7 @@ ipcMain.handle('krug:call-state', (event, active) => { if (!fromMain(event) || t
 ipcMain.handle('krug:update-state', event => { if (!fromMain(event)) throw new Error('Invalid sender'); return updateStatus; });
 function configureUpdates() {
   if (!app.isPackaged) return;
-  const { autoUpdater } = require('electron-updater');
+  const { autoUpdater } = require('./generated/updater.cjs');
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.disableDifferentialDownload = true;

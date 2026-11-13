@@ -16,6 +16,9 @@ coverage/
 desktop/capture/bin/
 desktop/capture/obj/
 desktop/capture/publish/
+desktop/webview/bin/
+desktop/webview/obj/
+desktop/generated/
 release/
 desktop-updates/
 

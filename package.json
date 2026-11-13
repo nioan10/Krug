@@ -19,7 +19,7 @@
     "start": "node --env-file=.env --import tsx server/index.ts",
     "test": "node --import tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "desktop:prepare": "dotnet publish desktop/capture/Krug.Capture.csproj -c Release -r win-x64 --self-contained true -o desktop/capture/publish",
+    "desktop:prepare": "node scripts/build-desktop-updater.mjs && dotnet publish desktop/capture/Krug.Capture.csproj -c Release -r win-x64 --self-contained true -o desktop/capture/publish",
     "desktop:build": "pnpm desktop:prepare && electron-builder --win nsis --x64"
   },
   "build": {
@@ -34,7 +34,11 @@
       "desktop/preload.cjs",
       "desktop/picker*",
       "desktop/permission*",
-      "package.json"
+      "desktop/generated/updater.cjs",
+      "desktop/generated/updater.cjs.LEGAL.txt",
+      "desktop/generated/THIRD-PARTY-LICENSES.txt",
+      "package.json",
+      "!node_modules/**/*"
     ],
     "extraResources": [
       {
@@ -42,7 +46,13 @@
         "to": "capture"
       }
     ],
-    "publish": [{ "provider": "generic", "url": "https://chat.nioservices.website/api/desktop-updates" }],
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://chat.nioservices.website/api/desktop-updates"
+      }
+    ],
+    "electronLanguages": ["ru", "en-US"],
     "artifactName": "Krug-Setup-${version}.${ext}",
     "win": {
       "target": "nsis",
@@ -81,6 +91,7 @@
     "@vitejs/plugin-react": "6.3.0",
     "electron": "45.3.1",
     "electron-builder": "26.18.0",
+    "esbuild": "0.28.2",
     "typescript": "7.0.2",
     "vite": "8.3.8"
   }
