@@ -86,7 +86,7 @@ async function createWindow() {
   configureUpdates();
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   mainWindow.webContents.on('will-navigate', (event, url) => { try { if (new URL(url).origin !== ORIGIN) event.preventDefault(); } catch { event.preventDefault(); } });
-  mainWindow.webContents.on('did-start-navigation', (_e, _url, _inPlace, isMainFrame) => { if (isMainFrame) { stopAudio(); selectedPid = undefined; updateController?.resetCallState(); } });
+  mainWindow.webContents.on('did-start-navigation', (_e, _url, inPlace, isMainFrame) => { if (isMainFrame && !inPlace) { stopAudio(); selectedPid = undefined; updateController?.resetCallState(); } });
   mainWindow.on('closed', () => { stopAudio(); selectedPid = undefined; });
   await mainWindow.loadURL(ORIGIN);
 }
