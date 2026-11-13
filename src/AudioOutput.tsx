@@ -5,8 +5,32 @@ import type { Room } from 'livekit-client';
 const storageKey = 'krug-audio-output';
 const readOutput = () => { try { return localStorage.getItem(storageKey) || 'default'; } catch { return 'default'; } };
 const rememberOutput = (id: string) => { try { localStorage.setItem(storageKey, id); } catch { /* Storage can be unavailable. */ } };
-export function supportsOutputSelection() { return typeof HTMLMediaElement !== 'undefined' && 'setSinkId' in HTMLMediaElement.prototype; }
-async function selectOutput(room: Room, id: string) { await room.switchActiveDevice('audiooutput', id); }
+type OutputContext = AudioContext & { sinkId?: string; setSinkId?: (id: string) => Promise<void> };
+function playbackContext(room: Room): OutputContext | undefined {
+  const mix = room.options.webAudioMix;
+  return typeof mix === 'object' ? mix.audioContext : undefined;
+}
+export function supportsOutputSelection(room: Room) {
+  const context = playbackContext(room);
+  return context ? typeof context.setSinkId === 'function' : typeof HTMLMediaElement !== 'undefined' && 'setSinkId' in HTMLMediaElement.prototype;
+}
+function currentOutput(room: Room) { return playbackContext(room)?.sinkId || room.getActiveDevice('audiooutput') || 'default'; }
+export async function selectOutput(room: Room, id: string) {
+  const context = playbackContext(room);
+  if (!context) { await room.switchActiveDevice('audiooutput', id); return; }
+  if (!context.setSinkId) throw new Error('Output selection is unsupported');
+  const previous = currentOutput(room);
+  try {
+    await context.setSinkId(id === 'default' ? '' : id);
+    // Match the muted media elements to the Web Audio destination for echo cancellation.
+    await Promise.all([...room.remoteParticipants.values()].map(participant => participant.setAudioOutput({ deviceId: id })));
+    room.options.audioOutput = { deviceId: id };
+  } catch (error) {
+    await context.setSinkId(previous === 'default' ? '' : previous).catch(() => {});
+    await Promise.all([...room.remoteParticipants.values()].map(participant => participant.setAudioOutput({ deviceId: previous }).catch(() => {})));
+    throw error;
+  }
+}
 
 /** Restore only an already permitted device; never ask for microphone access on join. */
 export function RestoreAudioOutput({ notify }: { notify: (message: string) => void }) {
@@ -14,7 +38,7 @@ export function RestoreAudioOutput({ notify }: { notify: (message: string) => vo
   useEffect(() => {
     let stopped = false;
     const saved = readOutput();
-    if (saved !== 'default' && supportsOutputSelection()) {
+    if (saved !== 'default' && supportsOutputSelection(room)) {
       void navigator.mediaDevices.enumerateDevices().then(async devices => {
         if (stopped) return;
         if (!devices.some(device => device.kind === 'audiooutput' && device.deviceId === saved)) { rememberOutput('default'); return; }
@@ -30,14 +54,15 @@ export function AudioOutputPicker({ notify }: { notify: (message: string) => voi
   const room = useRoomContext();
   const [busy, setBusy] = useState(false);
   const [extra, setExtra] = useState<MediaDeviceInfo[]>([]);
+  const [selection, setSelection] = useState(() => currentOutput(room));
   const onError = useCallback(() => notify('Не удалось переключить динамики. Проверьте подключение устройства и разрешение браузера.'), [notify]);
-  const { devices, activeDeviceId } = useMediaDeviceSelect({ kind: 'audiooutput', requestPermissions: false, onError });
-  const supported = supportsOutputSelection();
+  const { devices } = useMediaDeviceSelect({ kind: 'audiooutput', requestPermissions: false, onError });
+  const supported = supportsOutputSelection(room);
   const choices = [...new Map([...devices, ...extra].filter(device => device.deviceId && device.deviceId !== 'default').map(device => [device.deviceId, device])).values()];
-  const selected = choices.some(device => device.deviceId === activeDeviceId) ? activeDeviceId : 'default';
+  const selected = choices.some(device => device.deviceId === selection) ? selection : 'default';
   async function change(id: string) {
     setBusy(true);
-    try { await selectOutput(room, id); rememberOutput(id); }
+    try { await selectOutput(room, id); setSelection(id); rememberOutput(id); }
     catch { onError(); }
     finally { setBusy(false); }
   }
@@ -48,7 +73,7 @@ export function AudioOutputPicker({ notify }: { notify: (message: string) => voi
       if (media.selectAudioOutput) {
         const device = await media.selectAudioOutput();
         setExtra([device]);
-        await selectOutput(room, device.deviceId); rememberOutput(device.deviceId);
+        await selectOutput(room, device.deviceId); setSelection(device.deviceId); rememberOutput(device.deviceId);
       } else {
         // Chromium exposes the full speaker list after capture permission. Do not publish it.
         const stream = await media.getUserMedia({ audio: true });

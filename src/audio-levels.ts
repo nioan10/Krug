@@ -6,8 +6,8 @@ export function level(value: unknown, maximum = 1): number {
 export function parseAudioLevels(raw: string | null): AudioLevels {
   try {
     const parsed = JSON.parse(raw || '{}');
-    return { master: level(parsed.master), microphone: level(parsed.microphone, 2), participants: Object.fromEntries(
-      Object.entries(parsed.participants || {}).slice(0, 200).map(([id, value]) => [id, level(value)]),
+    return { master: level(parsed.master, 2), microphone: level(parsed.microphone, 2), participants: Object.fromEntries(
+      Object.entries(parsed.participants || {}).slice(0, 200).map(([id, value]) => [id, level(value, 2)]),
     ) };
   } catch { return defaultAudioLevels(); }
 }
@@ -18,4 +18,4 @@ export function loadAudioLevels(): AudioLevels {
 export function saveAudioLevels(levels: AudioLevels) {
   try { localStorage.setItem(key, JSON.stringify(levels)); } catch { /* Private browsing may disable storage. */ }
 }
-export const incomingLevel = (levels: AudioLevels, identity: string) => level(levels.master) * level(levels.participants[identity]);
+export const incomingLevel = (levels: AudioLevels, identity: string) => level(levels.master, 2) * level(levels.participants[identity], 2);

@@ -11,7 +11,7 @@ export function IncomingAudio({ levels, muted }: { levels: AudioLevels; muted: b
   return <div hidden>{tracks.map(trackRef => <AudioTrack key={trackRef.publication.trackSid} trackRef={trackRef} volume={incomingLevel(levels, trackRef.participant.identity)} muted={muted} />)}</div>;
 }
 
-export function VolumeSlider({ label, value, max = 1, onChange }: { label: string; value: number; max?: number; onChange: (value: number) => void }) {
+export function VolumeSlider({ label, value, max = 2, onChange }: { label: string; value: number; max?: number; onChange: (value: number) => void }) {
   return <label className="volume-slider"><span>{label}<output>{Math.round(value * 100)}%</output></span><input type="range" aria-label={label} min="0" max={max * 100} step="5" value={Math.round(value * 100)} aria-valuetext={`${Math.round(value * 100)}%`} onChange={event => onChange(Number(event.target.value) / 100)} /></label>;
 }
 

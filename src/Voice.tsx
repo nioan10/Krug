@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { LiveKitRoom, TrackToggle, useParticipants, useTracks, VideoTrack, useIsSpeaking, useConnectionState, StartAudio } from '@livekit/components-react';
-import { Track, ConnectionState, type Participant, type RoomOptions } from 'livekit-client';
+import { Room, Track, ConnectionState, type Participant, type RoomOptions } from 'livekit-client';
 import { Headphones, HeadphoneOff, Mic, MicOff, MonitorUp, PhoneOff, Settings2, Video, Maximize2, Radio, Volume2 } from 'lucide-react';
 import { Avatar, Modal } from './ui';
 import { IncomingAudio, MicrophoneToggle, VolumeSlider } from './AudioControls';
@@ -59,7 +59,22 @@ function CallContent({ onLeave, notify }: { onLeave: () => void; notify: (messag
   </div>;
 }
 export function Voice({ call, onLeave, notify }: { call: Call; onLeave: () => void; notify: (s: string) => void }) {
+  const [room, setRoom] = useState<Room>();
+  const active = useRef(false);
+  useEffect(() => {
+    active.current = true;
+    // Web Audio supports amplification; HTMLMediaElement.volume is capped at 1.
+    const audioContext = new AudioContext({ latencyHint: 'interactive' });
+    const nextRoom = new Room({ ...options, webAudioMix: { audioContext } });
+    setRoom(nextRoom);
+    return () => {
+      active.current = false;
+      void nextRoom.disconnect().finally(() => audioContext.close()).catch(() => {});
+    };
+  }, []);
+  const onDisconnected = useCallback(() => { if (active.current) onLeave(); }, [onLeave]);
   const onError = useCallback(() => notify('Не удалось подключиться к медиасерверу. Проверьте соединение и попробуйте снова.'), [notify]);
   const onMediaDeviceFailure = useCallback(() => notify('Браузер не дал доступ к устройству. Можно остаться слушателем и включить микрофон позже.'), [notify]);
-  return <LiveKitRoom token={call.token} serverUrl={call.url} options={options} connect audio={false} video={false} onDisconnected={onLeave} onError={onError} onMediaDeviceFailure={onMediaDeviceFailure}><CallContent onLeave={onLeave} notify={notify} /></LiveKitRoom>;
+  if (!room) return <div className="call-content">Подключаемся…</div>;
+  return <LiveKitRoom room={room} token={call.token} serverUrl={call.url} connect audio={false} video={false} onDisconnected={onDisconnected} onError={onError} onMediaDeviceFailure={onMediaDeviceFailure}><CallContent onLeave={onLeave} notify={notify} /></LiveKitRoom>;
 }
