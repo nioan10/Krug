@@ -13,6 +13,8 @@ deploy/caddy.json
 *.log
 *.tsbuildinfo
 coverage/
+desktop/capture/bin/
+desktop/capture/obj/
 
 # AI assistants, agent instructions, local memories and editor sessions
 AGENTS.md
