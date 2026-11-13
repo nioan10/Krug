@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { Socket } from 'node:net';
 import { TokenVerifier } from 'livekit-server-sdk';
-import { buildApp } from '../server/app.ts';
+import { buildApp as createApp } from '../server/app.ts';
+import type { MediaService } from '../server/media.ts';
 import { readConfig } from '../server/config.ts';
 import { digest, hashPassword, verifyPassword } from '../server/security.ts';
 
@@ -14,6 +15,7 @@ const origin = 'http://localhost:5173';
 const bootstrap = 'test-only-bootstrap-invite-32-characters-long';
 const password = 'Testing-a-long-password-123!';
 const config = (path = ':memory:') => readConfig({ NODE_ENV: 'test', APP_ORIGIN: origin, DATABASE_PATH: path, LIVEKIT_API_KEY: 'test-api-key', LIVEKIT_API_SECRET: 'test-api-secret-long-enough-for-tests', BOOTSTRAP_INVITE: bootstrap });
+const buildApp = (cfg: ReturnType<typeof config>, media: Partial<MediaService> = {}) => createApp(cfg, { async deleteRoom() {}, async participants() { return {}; }, ...media });
 type App = Awaited<ReturnType<typeof buildApp>>;
 const headers = (cookie = '') => ({ origin, cookie });
 const testSocket = { remoteAddress: '127.0.0.1' } as Socket;
@@ -191,4 +193,29 @@ test('an empty channel list survives a restart', async t => {
   for (const channel of channels) assert.equal((await app.inject({ method: 'DELETE', url: `/api/channels/${channel.id}`, headers: headers(admin), payload: { confirmation: channel.name } })).statusCode, 200);
   await app.close(); app = await buildApp(config(path));
   assert.deepEqual((await app.inject({ url: '/api/channels', headers: headers(admin) })).json().channels, []);
+});
+
+test('room presence reports media participants, deduplicates users and updates connected clients', async t => {
+  let identities: string[] = []; let calls = 0;
+  const app = await buildApp(config(), { async participants(ids) { calls++; assert.ok(ids.includes('lounge')); assert.ok(!ids.includes('general')); return { lounge: identities, unknown: identities }; } });
+  t.after(() => app.close()); const admin = await owner(app); const regular = await member(app, admin);
+  const friend = (await app.inject({ url: '/api/me', headers: headers(regular) })).json().user;
+  assert.equal((await app.inject('/api/voice-presence')).statusCode, 401);
+  identities = [friend.id, friend.id, 'unknown-user'];
+  const first = (await app.inject({ url: '/api/voice-presence', headers: headers(admin) })).json();
+  assert.equal(first.available, true); assert.deepEqual(first.rooms.lounge, [friend]); assert.equal(first.rooms.unknown, undefined);
+  await app.inject({ url: '/api/voice-presence', headers: headers(admin) }); assert.equal(calls, 1);
+  const socket = await app.injectWS('/api/events', { socket: testSocket, headers: headers(admin) }); t.after(() => socket.terminate());
+  identities = [];
+  const empty = new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Presence update not delivered')), 6500);
+    socket.on('message', data => { const event = JSON.parse(data.toString()); if (event.type === 'voice-presence' && event.available && event.rooms.lounge.length === 0) { clearTimeout(timer); resolve(); } });
+  });
+  await empty;
+});
+
+test('media failure is reported as unavailable rather than an empty room', async t => {
+  const app = await buildApp(config(), { async participants() { throw new Error('Offline'); } }); t.after(() => app.close());
+  const admin = await owner(app);
+  assert.deepEqual((await app.inject({ url: '/api/voice-presence', headers: headers(admin) })).json(), { rooms: {}, available: false });
 });

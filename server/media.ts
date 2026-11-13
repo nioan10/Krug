@@ -3,6 +3,7 @@ import type { Config } from './config.ts';
 
 export interface MediaService {
   deleteRoom(id: string): Promise<void>;
+  participants(channelIds: string[]): Promise<Record<string, string[]>>;
 }
 
 export function createMediaService(config: Config): MediaService {
@@ -12,6 +13,14 @@ export function createMediaService(config: Config): MediaService {
     async deleteRoom(id) {
       try { await client.deleteRoom(id); }
       catch (error) { if (!missing(error)) throw error; }
+    },
+    async participants(channelIds) {
+      if (!channelIds.length) return {};
+      const rooms = await client.listRooms(channelIds);
+      return Object.fromEntries(await Promise.all(rooms.filter(room => channelIds.includes(room.name) && room.numParticipants > 0).map(async room => {
+        try { return [room.name, (await client.listParticipants(room.name)).map(participant => participant.identity)]; }
+        catch (error) { if (missing(error)) return [room.name, []]; throw error; }
+      })));
     },
   };
 }

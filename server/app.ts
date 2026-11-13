@@ -91,6 +91,33 @@ export async function buildApp(config: Config, media: MediaService = createMedia
   const presence = () => broadcast({ type: 'presence', users: [...new Map([...sockets.values()].map(s => [s.user.id, s.user])).values()] });
   const requireChannel = (id: string) => { const channel = store.channel(id); if (!channel) throw new ApiError(404, 'Канал не найден.'); if (deletingChannels.has(id)) throw new ApiError(409, 'Канал удаляется.'); return channel; };
   const authRate = { rateLimit: { max: 12, timeWindow: '15 minutes' } };
+  let voicePresence: { rooms: Record<string, User[]>; available: boolean } = { rooms: {}, available: false };
+  let presenceRequest: Promise<void> | undefined;
+  let presenceCheckedAt = 0;
+  let closing = false;
+  function refreshVoicePresence() {
+    if (closing) return Promise.resolve();
+    if (presenceRequest) return presenceRequest;
+    if (Date.now() - presenceCheckedAt < 2500) return Promise.resolve();
+    presenceRequest = (async () => {
+      let next: typeof voicePresence;
+      try {
+        const occupants = await media.participants(store.channels().filter(channel => channel.kind === 'voice').map(channel => channel.id));
+        const rooms = Object.fromEntries(store.channels().filter(channel => channel.kind === 'voice' && !deletingChannels.has(channel.id)).map(channel => [channel.id,
+          [...new Set(occupants[channel.id] ?? [])].sort().map(id => store.publicUser(id)).filter((user): user is User => Boolean(user)),
+        ]));
+        next = { rooms, available: true };
+      } catch {
+        next = { rooms: {}, available: false };
+      }
+      if (JSON.stringify(next) !== JSON.stringify(voicePresence)) {
+        voicePresence = next;
+        broadcast({ type: 'voice-presence', ...voicePresence });
+      }
+      presenceCheckedAt = Date.now();
+    })().finally(() => { presenceRequest = undefined; });
+    return presenceRequest;
+  }
 
   app.get('/api/health', async () => ({ status: 'ok' }));
   app.post('/api/auth/register', { config: authRate }, async (req, reply) => {
@@ -144,6 +171,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
   });
   app.get('/api/me', { preHandler: auth }, async req => ({ user: req.user }));
   app.get('/api/channels', { preHandler: auth }, async () => ({ channels: store.channels() }));
+  app.get('/api/voice-presence', { preHandler: auth }, async () => { await refreshVoicePresence(); return voicePresence; });
   app.post('/api/channels', { preHandler: admin }, async (req, reply) => {
     const input = z.object({ name: z.string().trim().min(1).max(32), kind: z.enum(['text', 'voice']), description: z.string().trim().max(120).default('') }).parse(req.body);
     if (store.channels().length >= 40) throw new ApiError(409, 'Можно создать до 40 каналов.');
@@ -172,6 +200,8 @@ export async function buildApp(config: Config, media: MediaService = createMedia
       const channels = store.channels();
       broadcast({ type: 'channel-deleted', channelId: id });
       broadcast({ type: 'channels', channels });
+      delete voicePresence.rooms[id];
+      broadcast({ type: 'voice-presence', ...voicePresence });
       return { ok: true, channels };
     } finally { deletingChannels.delete(id); }
   });
@@ -232,7 +262,11 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     socket.on('error', () => socket.terminate());
     socket.on('close', () => { sockets.delete(socket); presence(); });
     send(socket, { type: 'ready' }); presence();
+    send(socket, { type: 'voice-presence', ...voicePresence });
+    void refreshVoicePresence();
   });
+  const voiceHeartbeat = setInterval(() => { if (sockets.size) void refreshVoicePresence(); }, 3000);
+  voiceHeartbeat.unref();
   const heartbeat = setInterval(() => {
     for (const [socket, state] of sockets) {
       if (!state.alive) { socket.terminate(); continue; }
@@ -251,7 +285,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
       return reply.code(404).send({ message: 'Не найдено.' });
     });
   }
-  app.addHook('preClose', async () => { for (const socket of sockets.keys()) socket.terminate(); });
+  app.addHook('preClose', async () => { closing = true; clearInterval(voiceHeartbeat); for (const socket of sockets.keys()) socket.terminate(); await presenceRequest; });
   app.addHook('onClose', async () => { clearInterval(heartbeat); db.close(); });
   return app;
 }

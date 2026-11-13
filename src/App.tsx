@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ArrowUpRight, AudioLines, ChevronDown, Hash, Headphones, LockKeyhole, LogOut, Menu, MessageSquare, Mic, MonitorUp, PhoneOff, Plus, Radio, Settings2, ShieldCheck, Signal, UserPlus, Users, Volume2, X } from 'lucide-react';
-import { api, errorText, HttpError, type Channel, type User } from './api';
+import { api, errorText, HttpError, type Channel, type User, type VoicePresence } from './api';
 import { emit, type ServerEvent } from './events';
 import { Auth } from './Auth';
 import { InstallApp, AppUpdate } from './Pwa';
@@ -17,6 +17,7 @@ export function App() {
   const [channelsLoaded, setChannelsLoaded] = useState(false);
   const [selected, setSelected] = useState('lounge');
   const [online, setOnline] = useState<User[]>([]);
+  const [voicePresence, setVoicePresence] = useState<VoicePresence>({ rooms: {}, available: false });
   const [connected, setConnected] = useState(false);
   const [call, setCall] = useState<Call | null>(null);
   const [joining, setJoining] = useState(false);
@@ -50,6 +51,7 @@ export function App() {
       socket.onmessage = event => {
         const data = JSON.parse(event.data) as ServerEvent;
         if (data.type === 'presence') setOnline(data.users);
+        if (data.type === 'voice-presence') setVoicePresence({ rooms: data.rooms, available: data.available });
         if (data.type === 'channels') { setChannels(data.channels); setChannelsLoaded(true); }
         if (data.type === 'channel-deleted') {
           setCall(previous => previous?.channel.id === data.channelId ? null : previous);
@@ -61,7 +63,7 @@ export function App() {
       };
       socket.onclose = event => {
         if (stopped) return;
-        setConnected(false); setOnline([]);
+        setConnected(false); setOnline([]); setVoicePresence({ rooms: {}, available: false });
         if (event.code === 1008) {
           if (['Session expired', 'Logged out', 'Password changed'].includes(event.reason)) { signedOut(); notify('Сессия завершилась. Войдите снова.'); }
           else notify('Слишком много открытых вкладок. Закройте лишние и обновите страницу.');
@@ -96,7 +98,10 @@ export function App() {
       <div className="sidebar-scroll"><div className="channel-section-label">ОБЩЕНИЕ{user.role === 'admin' && <button title="Создать канал" aria-label="Создать канал" onClick={() => setModal('channel')}><Plus size={15} /></button>}</div>
         <nav aria-label="Текстовые каналы">{channels.filter(c => c.kind === 'text').map(c => <button key={c.id} className={`channel-link ${current?.id === c.id ? 'selected' : ''}`} onClick={() => { setSelected(c.id); setMobileNav(false); }}><Hash size={19} /><span>{c.name}</span></button>)}</nav>
         <div className="channel-section-label voice-label">ГОЛОСОВЫЕ КОМНАТЫ<span>{channels.filter(c => c.kind === 'voice').length.toString().padStart(2, '0')}</span></div>
-        <nav aria-label="Голосовые комнаты">{channels.filter(c => c.kind === 'voice').map(c => <button key={c.id} className={`channel-link voice-link ${current?.id === c.id ? 'selected' : ''}`} onClick={() => { setSelected(c.id); setMobileNav(false); }}><Volume2 size={19} /><span>{c.name}</span>{call?.channel.id === c.id && <span className="live-dot" />}</button>)}</nav>
+        <nav aria-label="Голосовые комнаты">{channels.filter(c => c.kind === 'voice').map(c => {
+          const occupants = connected && voicePresence.available ? voicePresence.rooms[c.id] ?? [] : null;
+          return <div key={c.id} className="voice-room-nav"><button className={`channel-link voice-link ${current?.id === c.id ? 'selected' : ''}`} onClick={() => { setSelected(c.id); setMobileNav(false); }}><Volume2 size={19} /><span>{c.name}</span>{call?.channel.id === c.id && <span className="live-dot" />}<small className="room-count" aria-label={occupants ? `В комнате: ${occupants.length}` : 'Онлайн комнаты недоступен'} title={occupants ? `В комнате: ${occupants.length}` : 'Не удалось получить онлайн комнаты'}>{occupants?.length ?? '—'}</small></button>{Boolean(occupants?.length) && <ul className="room-occupants" aria-label={`Участники комнаты ${c.name}`}>{occupants!.map(person => <li key={person.id}><Avatar name={person.displayName} /><span>{person.displayName}</span>{person.id === user.id && <small>вы</small>}</li>)}</ul>}</div>;
+        })}</nav>
 
       </div>
       <InstallApp compact />

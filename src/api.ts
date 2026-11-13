@@ -2,6 +2,7 @@ export type User = { id: string; username: string; displayName: string; role: 'a
 export type Channel = { id: string; name: string; kind: 'text' | 'voice'; description: string };
 export type Message = { id: number; channelId: string; body: string; createdAt: number; user: User };
 export type Invite = { id: string; expiresAt: number; usedAt: number | null; createdAt: number };
+export type VoicePresence = { rooms: Record<string, User[]>; available: boolean };
 export class HttpError extends Error { constructor(public status: number, message: string) { super(message); } }
 export async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
   const response = await fetch(`/api${path}`, {
