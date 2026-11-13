@@ -8,6 +8,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
     PORT: z.coerce.number().int().min(1).max(65535).default(3000),
     APP_ORIGIN: z.url().default('http://localhost:5173'),
     DATABASE_PATH: z.string().default('data/krug.sqlite'),
+    DESKTOP_UPDATE_DIR: z.string().default('desktop-updates'),
     LIVEKIT_URL: z.url().default('ws://localhost:7880'),
     LIVEKIT_API_KEY: z.string().min(8),
     LIVEKIT_API_SECRET: z.string().min(32),

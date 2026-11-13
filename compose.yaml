@@ -9,8 +9,10 @@ services:
       NODE_ENV: production
       HOST: 127.0.0.1
       DATABASE_PATH: /app/data/krug.sqlite
+      DESKTOP_UPDATE_DIR: /app/desktop-updates
     volumes:
       - krug_data:/app/data
+      - ./desktop-updates:/app/desktop-updates:ro
     read_only: true
     tmpfs: ["/tmp:size=32m"]
     cap_drop: [ALL]

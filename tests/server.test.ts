@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -31,6 +31,23 @@ async function member(app: App, admin: string, username = 'member') {
   const response = await app.inject({ method: 'POST', url: '/api/auth/register', headers: headers(), payload: { username, displayName: username, password, invite: token } });
   assert.equal(response.statusCode, 201, response.body); return cookieOf(response);
 }
+
+test('desktop update files require a short-lived update-only token and a safe filename', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'krug-update-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, 'latest.yml'), 'version: 0.1.1\n');
+  writeFileSync(join(dir, 'Krug-Setup-0.1.1.exe'), 'fixture');
+  const app = await buildApp({ ...config(), DESKTOP_UPDATE_DIR: dir }); t.after(() => app.close());
+  assert.equal((await app.inject('/api/desktop-updates/access')).statusCode, 401);
+  assert.equal((await app.inject('/api/desktop-updates/latest.yml')).statusCode, 401);
+  const admin = await owner(app);
+  const token = (await app.inject({ url: '/api/desktop-updates/access', headers: headers(admin) })).json().token as string;
+  const authorization = { authorization: `Bearer ${token}` };
+  assert.equal((await app.inject({ url: '/api/desktop-updates/latest.yml', headers: authorization })).body, 'version: 0.1.1\n');
+  assert.equal((await app.inject({ url: '/api/desktop-updates/Krug-Setup-0.1.1.exe', headers: authorization })).body, 'fixture');
+  assert.equal((await app.inject({ url: '/api/desktop-updates/secret.txt', headers: authorization })).statusCode, 404);
+  assert.equal((await app.inject({ url: '/api/channels', headers: authorization })).statusCode, 401);
+});
 
 test('passwords use unique salts and reject wrong passwords', async () => {
   const first = await hashPassword(password); const second = await hashPassword(password);

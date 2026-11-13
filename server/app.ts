@@ -6,7 +6,8 @@ import websocket from '@fastify/websocket';
 import staticFiles from '@fastify/static';
 import { AccessToken } from 'livekit-server-sdk';
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { z } from 'zod';
 import type { WebSocket } from 'ws';
@@ -29,6 +30,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
   const { db } = store;
   const sockets = new Map<WebSocket, { user: User; hash: string; alive: boolean }>();
   const attempts = new Map<string, { count: number; expires: number }>();
+  const updateTokens = new Map<string, number>();
   const deletingChannels = new Set<string>();
   const dummy = await hashPassword(newSecret());
   const sessionCookie = config.NODE_ENV === 'production' ? '__Host-krug' : 'krug_session';
@@ -179,6 +181,25 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     return { ok: true };
   });
   app.get('/api/me', { preHandler: auth }, async req => ({ user: req.user }));
+  app.get('/api/desktop-updates/access', { preHandler: auth }, async () => {
+    const now = Date.now();
+    for (const [token, expires] of updateTokens) if (expires <= now) updateTokens.delete(token);
+    if (updateTokens.size >= 1000) throw new ApiError(429, 'Повторите попытку позже.');
+    const token = newSecret(); updateTokens.set(digest(token), now + 10 * 60 * 1000);
+    return { token };
+  });
+  app.get('/api/desktop-updates/:file', async (req, reply) => {
+    const header = req.headers.authorization || '';
+    const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+    if (!token || (updateTokens.get(digest(token)) || 0) <= Date.now()) throw new ApiError(401, 'Обновление недоступно.');
+    const { file } = z.object({ file: z.string() }).parse(req.params);
+    if (file !== 'latest.yml' && !/^Krug-Setup-\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\.exe$/.test(file)) throw new ApiError(404, 'Обновление не найдено.');
+    const path = resolve(config.DESKTOP_UPDATE_DIR, file);
+    let info; try { info = await stat(path); } catch { throw new ApiError(404, 'Обновление не найдено.'); }
+    if (!info.isFile()) throw new ApiError(404, 'Обновление не найдено.');
+    reply.header('Content-Length', info.size).type(file.endsWith('.yml') ? 'text/yaml; charset=utf-8' : 'application/octet-stream');
+    return reply.send(createReadStream(path));
+  });
   app.get('/api/channels', { preHandler: auth }, async () => ({ channels: store.channels() }));
   app.get('/api/unread', { preHandler: auth }, async req => ({ channels: store.unread(req.user!.id) }));
   app.post('/api/channels/:id/read', { preHandler: auth }, async req => {

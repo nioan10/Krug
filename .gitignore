@@ -17,6 +17,7 @@ desktop/capture/bin/
 desktop/capture/obj/
 desktop/capture/publish/
 release/
+desktop-updates/
 
 # AI assistants, agent instructions, local memories and editor sessions
 AGENTS.md
