@@ -3,7 +3,7 @@ import { ArrowUpRight, AudioLines, ChevronDown, Hash, Headphones, LockKeyhole, L
 import { api, errorText, HttpError, type Channel, type User, type VoicePresence } from './api';
 import { emit, type ServerEvent } from './events';
 import { Auth } from './Auth';
-import { InstallApp, AppUpdate } from './Pwa';
+import { InstallApp, AppUpdate, checkForAppUpdate } from './Pwa';
 import { Chat } from './Chat';
 import { Voice, type Call } from './Voice';
 import { Avatar, Logo } from './ui';
@@ -60,7 +60,7 @@ export function App() {
           setChannels(previous => previous.filter(c => c.id !== data.channelId));
           setSelected(previous => previous === data.channelId ? '' : previous);
         }
-        if (data.type === 'ready') void loadChannels();
+        if (data.type === 'ready') { void loadChannels(); checkForAppUpdate(); }
         emit(data);
       };
       socket.onclose = event => {
@@ -92,7 +92,7 @@ export function App() {
   const toastView = toast && <div className="toast" role="status"><span>{toast}</span><button aria-label="Закрыть уведомление" onClick={() => setToast('')}><X size={16} /></button></div>;
   if (booting) return <div className="loading-page"><Logo /><span>Загрузка…</span></div>;
   if (bootError) return <div className="loading-page"><Logo /><p>{bootError}</p><button className="primary" onClick={() => void boot()}>Попробовать снова</button></div>;
-  if (!user) return <><Auth onLogin={setUser} />{toastView}</>;
+  if (!user) return <><AppUpdate inCall={false} /><Auth onLogin={setUser} />{toastView}</>;
   return <div className="app-shell">
     {mobileNav && <button className="nav-scrim" aria-label="Закрыть меню" onClick={() => setMobileNav(false)} />}
     <aside className={`sidebar ${mobileNav ? 'mobile-open' : ''}`}><div className="sidebar-brand"><Logo /><span className="version">BETA</span></div>

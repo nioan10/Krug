@@ -10,7 +10,7 @@ self.addEventListener('activate', event => {
   })());
 });
 self.addEventListener('message', event => {
-  if (event.data?.type === 'APPLY_UPDATE') void self.skipWaiting();
+  if (event.data?.type === 'APPLY_UPDATE') event.waitUntil(self.skipWaiting());
 });
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);

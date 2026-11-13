@@ -35,3 +35,13 @@ test('service worker never intercepts API, credentials or third-party requests; 
   handlers.fetch({ request: { url: 'https://chat.example.com/', method: 'GET', mode: 'navigate' }, respondWith: (p: Promise<Response>) => { response = p; } });
   assert.ok(response); assert.equal(await (await response).text(), '<html>static shell</html>');
 });
+
+test('explicit update requests keep the worker alive until activation has been requested', async () => {
+  const handlers: Record<string, (event: any) => void> = {};
+  let activated = false; let lifetime: Promise<void> | undefined;
+  vm.runInNewContext(readFileSync('scripts/sw-template.js', 'utf8').replace('__VERSION__', 'test').replace('__PRECACHE__', '[]'), {
+    self: { addEventListener: (type: string, listener: (event: any) => void) => { handlers[type] = listener; }, skipWaiting: async () => { activated = true; } },
+  });
+  handlers.message({ data: { type: 'APPLY_UPDATE' }, waitUntil: (promise: Promise<void>) => { lifetime = promise; } });
+  assert.ok(lifetime); await lifetime; assert.equal(activated, true);
+});
