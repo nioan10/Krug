@@ -1,0 +1,52 @@
+# Linux VPS only: host networking preserves WebRTC UDP and source addresses.
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      HOST: 127.0.0.1
+      DATABASE_PATH: /app/data/krug.sqlite
+    volumes:
+      - krug_data:/app/data
+    read_only: true
+    tmpfs: ["/tmp:size=32m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+    logging: &logs
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+  livekit:
+    image: livekit/livekit-server:v1.13.11
+    command: ["--config", "/etc/livekit.yaml"]
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./deploy/livekit.yaml:/etc/livekit.yaml:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging: *logs
+  caddy:
+    image: livekit/caddyl4:v2.11.3
+    command: ["run", "--config", "/etc/caddy.json"]
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./deploy/caddy.json:/etc/caddy.json:ro
+      - caddy_data:/data
+    read_only: true
+    tmpfs: ["/tmp:size=32m"]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      app: { condition: service_healthy }
+      livekit: { condition: service_started }
+    logging: *logs
+volumes:
+  krug_data:
+  caddy_data:

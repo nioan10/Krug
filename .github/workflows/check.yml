@@ -1,0 +1,35 @@
+name: Check
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install --global pnpm@11.25.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm build
+      - run: docker build -t krug:test .
+      - name: Validate production proxy configuration
+        run: |
+          mkdir -p .local/production
+          cd .local/production
+          node ../../scripts/setup.mjs --domain chat.example.com --media-domain rtc.example.com --turn-domain turn.example.com --public-ip 203.0.113.10
+          docker run --rm -v "$PWD/deploy/caddy.json:/etc/caddy.json:ro" livekit/caddyl4:v2.11.3 validate --config /etc/caddy.json
+      - name: Check real audio and video transport
+        run: |
+          node scripts/setup.mjs
+          docker run -d --name krug-media-test --network host -v "$PWD/deploy/livekit.yaml:/etc/livekit.yaml:ro" livekit/livekit-server:v1.13.11 --config /etc/livekit.yaml
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:7880; then break; fi
+            sleep 1
+          done
+          node --env-file=.env scripts/test-media.mjs
+      - name: Clean up media test
+        if: always()
+        run: docker rm -f krug-media-test || true

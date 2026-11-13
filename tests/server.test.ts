@@ -1,0 +1,144 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import type { Socket } from 'node:net';
+import { TokenVerifier } from 'livekit-server-sdk';
+import { buildApp } from '../server/app.ts';
+import { readConfig } from '../server/config.ts';
+import { digest, hashPassword, verifyPassword } from '../server/security.ts';
+
+const origin = 'http://localhost:5173';
+const bootstrap = 'test-only-bootstrap-invite-32-characters-long';
+const password = 'Testing-a-long-password-123!';
+const config = (path = ':memory:') => readConfig({ NODE_ENV: 'test', APP_ORIGIN: origin, DATABASE_PATH: path, LIVEKIT_API_KEY: 'test-api-key', LIVEKIT_API_SECRET: 'test-api-secret-long-enough-for-tests', BOOTSTRAP_INVITE: bootstrap });
+type App = Awaited<ReturnType<typeof buildApp>>;
+const headers = (cookie = '') => ({ origin, cookie });
+const testSocket = { remoteAddress: '127.0.0.1' } as Socket;
+const cookieOf = (response: { cookies: { name: string; value: string }[] }) => response.cookies.map(c => `${c.name}=${c.value}`).join('; ');
+async function owner(app: App) {
+  const response = await app.inject({ method: 'POST', url: '/api/auth/register', headers: headers(), payload: { username: 'owner', displayName: 'Владелец', password, invite: bootstrap } });
+  assert.equal(response.statusCode, 201, response.body); return cookieOf(response);
+}
+async function member(app: App, admin: string, username = 'member') {
+  const invite = await app.inject({ method: 'POST', url: '/api/invites', headers: headers(admin) });
+  assert.equal(invite.statusCode, 201);
+  const token = new URLSearchParams(new URL(invite.json().url).hash.slice(1)).get('invite');
+  const response = await app.inject({ method: 'POST', url: '/api/auth/register', headers: headers(), payload: { username, displayName: username, password, invite: token } });
+  assert.equal(response.statusCode, 201, response.body); return cookieOf(response);
+}
+
+test('passwords use unique salts and reject wrong passwords', async () => {
+  const first = await hashPassword(password); const second = await hashPassword(password);
+  assert.notEqual(first, second); assert.ok(await verifyPassword(password, first)); assert.equal(await verifyPassword('wrong', first), false);
+});
+test('production rejects cleartext configuration', () => {
+  assert.throws(() => readConfig({ ...config(), NODE_ENV: 'production' } as unknown as NodeJS.ProcessEnv), /HTTPS/);
+});
+test('private API requires authentication and mutations require same origin', async t => {
+  const app = await buildApp(config()); t.after(() => app.close());
+  for (const url of ['/api/me', '/api/channels', '/api/channels/general/messages', '/api/invites']) assert.equal((await app.inject(url)).statusCode, 401);
+  for (const requestOrigin of ['https://evil.example', undefined]) {
+    const result = await app.inject({ method: 'POST', url: '/api/auth/register', headers: requestOrigin ? { origin: requestOrigin } : {}, payload: { username: 'owner', displayName: 'Owner', password, invite: bootstrap } });
+    assert.equal(result.statusCode, 403);
+  }
+  assert.equal((await app.inject({ method: 'POST', url: '/api/auth/register', headers: headers(), payload: { username: 'owner', displayName: 'Owner', password, invite: 'wrong'.repeat(10) } })).statusCode, 400);
+});
+test('first invite is admin-only, single-use and atomically consumed', async t => {
+  const app = await buildApp(config()); t.after(() => app.close());
+  const results = await Promise.all(['owner1', 'owner2'].map(username => app.inject({ method: 'POST', url: '/api/auth/register', headers: headers(), payload: { username, displayName: username, password, invite: bootstrap } })));
+  assert.deepEqual(results.map(r => r.statusCode).sort(), [201, 400]);
+  assert.equal(results.find(r => r.statusCode === 201)!.json().user.role, 'admin');
+  assert.match(results.find(r => r.statusCode === 201)!.headers['set-cookie'] as string, /HttpOnly/);
+  assert.match(results.find(r => r.statusCode === 201)!.headers['set-cookie'] as string, /SameSite=Strict/);
+});
+test('members cannot create invites/channels or clear history; revoke works', async t => {
+  const app = await buildApp(config()); t.after(() => app.close()); const admin = await owner(app); const regular = await member(app, admin);
+  for (const [method, url, payload] of [['POST', '/api/invites', undefined], ['POST', '/api/channels', { name: 'hacked', kind: 'text' }], ['DELETE', '/api/channels/general/messages', { confirmation: 'общий' }]] as const) {
+    assert.equal((await app.inject({ method, url, payload, headers: headers(regular) })).statusCode, 403);
+  }
+  const invite = (await app.inject({ method: 'POST', url: '/api/invites', headers: headers(admin) })).json();
+  await app.inject({ method: 'DELETE', url: `/api/invites/${invite.id}`, headers: headers(admin) });
+  const token = new URLSearchParams(new URL(invite.url).hash.slice(1)).get('invite');
+  assert.equal((await app.inject({ method: 'POST', url: '/api/auth/register', headers: headers(), payload: { username: 'third', displayName: 'Third', password, invite: token } })).statusCode, 400);
+});
+test('messages persist, pagination is bounded, deletion checks authorship and explicit confirmation', async t => {
+  const app = await buildApp(config()); t.after(() => app.close()); const admin = await owner(app); const regular = await member(app, admin);
+  const created = await app.inject({ method: 'POST', url: '/api/channels/general/messages', headers: headers(admin), payload: { body: '<script>alert(1)</script> hello' } });
+  assert.equal(created.statusCode, 201); const id = created.json().message.id;
+  const history = (await app.inject({ url: '/api/channels/general/messages', headers: headers(regular) })).json();
+  assert.equal(history.messages[0].body, '<script>alert(1)</script> hello');
+  assert.equal((await app.inject({ method: 'DELETE', url: `/api/messages/${id}`, headers: headers(regular) })).statusCode, 403);
+  assert.equal((await app.inject({ method: 'DELETE', url: '/api/channels/general/messages', headers: headers(admin), payload: { confirmation: 'wrong' } })).statusCode, 400);
+  assert.equal((await app.inject({ method: 'DELETE', url: '/api/channels/general/messages', headers: headers(admin), payload: { confirmation: 'общий' } })).statusCode, 200);
+  assert.equal((await app.inject({ url: '/api/channels/general/messages', headers: headers(admin) })).json().messages.length, 0);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/channels/general/messages', headers: headers(regular), payload: { body: 'a'.repeat(4001) } })).statusCode, 400);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/channels/no-such-room/messages', headers: headers(regular), payload: { body: 'hi' } })).statusCode, 404);
+});
+test('voice tokens are scoped to a real voice room and short-lived', async t => {
+  const cfg = config(); const app = await buildApp(cfg); t.after(() => app.close()); const admin = await owner(app);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/channels/lounge/voice-token', headers: headers() })).statusCode, 401);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/channels/general/voice-token', headers: headers(admin) })).statusCode, 400);
+  const response = await app.inject({ method: 'POST', url: '/api/channels/lounge/voice-token', headers: headers(admin) });
+  assert.equal(response.statusCode, 200);
+  const claims = await new TokenVerifier(cfg.LIVEKIT_API_KEY, cfg.LIVEKIT_API_SECRET).verify(response.json().token);
+  assert.equal(claims.video?.room, 'lounge'); assert.equal(claims.video?.roomJoin, true); assert.equal(claims.video?.roomAdmin, undefined); assert.equal(claims.video?.canPublishData, false);
+  const raw = JSON.parse(Buffer.from(response.json().token.split('.')[1], 'base64url').toString());
+  assert.ok(raw.exp - Math.floor(Date.now() / 1000) <= 120);
+});
+test('websocket sends messages and rejects a foreign origin', async t => {
+  const app = await buildApp(config()); t.after(() => app.close()); const admin = await owner(app); const regular = await member(app, admin); await app.ready();
+  await assert.rejects(app.injectWS('/api/events', { socket: testSocket, headers: { origin: 'https://evil.example', cookie: regular } }), /403/);
+  await assert.rejects(app.injectWS('/api/events', { socket: testSocket, headers: { origin } }), /401/);
+  const socket = await app.injectWS('/api/events', { socket: testSocket, headers: headers(regular) });
+  t.after(() => socket.terminate());
+  const received = new Promise<unknown>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Message not delivered')), 2000);
+    socket.on('message', data => { const event = JSON.parse(data.toString()); if (event.type === 'message') { clearTimeout(timeout); resolve(event.message.body); } });
+  });
+  await app.inject({ method: 'POST', url: '/api/channels/general/messages', headers: headers(admin), payload: { body: 'Реальное сообщение' } });
+  assert.equal(await received, 'Реальное сообщение');
+  const closed = new Promise<number>(resolve => socket.once('close', resolve));
+  await app.inject({ method: 'POST', url: '/api/auth/logout', headers: headers(regular) });
+  assert.equal(await closed, 1008);
+  assert.equal((await app.inject({ url: '/api/me', headers: headers(regular) })).statusCode, 401);
+});
+test('changing password invalidates all sessions and old password', async t => {
+  const app = await buildApp(config()); t.after(() => app.close()); const admin = await owner(app);
+  const another = await app.inject({ method: 'POST', url: '/api/auth/login', headers: headers(), payload: { username: 'owner', password } });
+  const updated = password + '-new';
+  assert.equal((await app.inject({ method: 'POST', url: '/api/auth/password', headers: headers(admin), payload: { currentPassword: password, password: updated } })).statusCode, 200);
+  for (const token of [admin, cookieOf(another)]) assert.equal((await app.inject({ url: '/api/me', headers: headers(token) })).statusCode, 401);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/auth/login', headers: headers(), payload: { username: 'owner', password } })).statusCode, 401);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/auth/login', headers: headers(), payload: { username: 'owner', password: updated } })).statusCode, 200);
+});
+test('old history survives cleanup and restart; sessions are hashed; pages do not overlap', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'krug-test-')); const path = join(directory, 'test.sqlite');
+  let app = await buildApp(config(path));
+  t.after(async () => { await app.close(); rmSync(directory, { recursive: true, force: true }); });
+  const admin = await owner(app);
+  const user = (await app.inject({ url: '/api/me', headers: headers(admin) })).json().user;
+  await app.close();
+  const db = new DatabaseSync(path);
+  const insert = db.prepare('INSERT INTO messages (channelId,userId,body,createdAt) VALUES (?,?,?,?)');
+  for (let i = 0; i < 70; i++) insert.run('general', user.id, `Old message ${i}`, Date.UTC(2020, 0, 1));
+  const session = db.prepare('SELECT hash FROM sessions').get() as { hash: string };
+  assert.equal(session.hash, digest(admin.split('=')[1]));
+  const storedUser = db.prepare('SELECT password FROM users').get() as { password: string }; assert.notEqual(storedUser.password, password);
+  db.close();
+  app = await buildApp(config(path));
+  const recent = (await app.inject({ url: '/api/channels/general/messages', headers: headers(admin) })).json();
+  assert.equal(recent.messages.length, 50); assert.equal(recent.hasMore, true);
+  const old = (await app.inject({ url: `/api/channels/general/messages?before=${recent.messages[0].id}`, headers: headers(admin) })).json();
+  assert.equal(old.messages.length, 20); assert.equal(old.hasMore, false);
+  assert.ok(old.messages.at(-1).id < recent.messages[0].id);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/auth/register', headers: headers(), payload: { username: 'owner2', displayName: 'Owner 2', password, invite: bootstrap } })).statusCode, 400);
+});
+test('rate limits block repeated login attempts and cannot be bypassed with spoofed forwarding headers', async t => {
+  const app = await buildApp(config()); t.after(() => app.close());
+  let response;
+  for (let i = 0; i < 13; i++) response = await app.inject({ method: 'POST', url: '/api/auth/login', headers: { ...headers(), 'x-forwarded-for': `203.0.113.${i}` }, payload: { username: 'absent', password } });
+  assert.equal(response!.statusCode, 429);
+});
