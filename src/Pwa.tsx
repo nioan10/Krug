@@ -5,7 +5,7 @@ import { createUpdateManager, type UpdateState } from './pwa-updates';
 
 interface InstallPrompt extends Event { prompt(): Promise<{ outcome: 'accepted' | 'dismissed' }> }
 let prompt: InstallPrompt | null = null;
-let snapshot = { installed: window.matchMedia('(display-mode: standalone)').matches || Boolean((navigator as Navigator & { standalone?: boolean }).standalone), ready: false };
+let snapshot = { installed: Boolean(window.krugDesktop) || window.matchMedia('(display-mode: standalone)').matches || Boolean((navigator as Navigator & { standalone?: boolean }).standalone), ready: false };
 const listeners = new Set<() => void>();
 function update(next: Partial<typeof snapshot>) { snapshot = { ...snapshot, ...next }; listeners.forEach(fn => fn()); }
 function subscribe(fn: () => void) { listeners.add(fn); return () => { listeners.delete(fn); }; }

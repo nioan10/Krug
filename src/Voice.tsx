@@ -8,6 +8,7 @@ import { loadAudioLevels, saveAudioLevels } from './audio-levels';
 import { DeviceSettings } from './DeviceSettings';
 import { RestoreAudioOutput } from './AudioOutput';
 import type { Channel } from './api';
+import { DesktopShare } from './DesktopShare';
 
 export type Call = { channel: Channel; token: string; url: string };
 const options: RoomOptions = {
@@ -50,7 +51,7 @@ function CallContent({ onLeave, notify }: { onLeave: () => void; notify: (messag
       <MicrophoneToggle volume={levels.microphone} notify={notify} />
       <button className={deafened ? 'control-off' : ''} title={deafened ? 'Включить звук' : 'Выключить входящий звук'} aria-label={deafened ? 'Включить звук' : 'Выключить входящий звук'} aria-pressed={deafened} onClick={() => setDeafened(!deafened)}>{deafened ? <HeadphoneOff size={21} /> : <Headphones size={21} />}</button>
       <TrackToggle source={Track.Source.Camera} showIcon={false} aria-label="Включить или выключить камеру" title="Камера" onDeviceError={() => notify('Нет доступа к камере. Проверьте разрешения браузера.')}><Video size={21} /></TrackToggle>
-      <TrackToggle source={Track.Source.ScreenShare} showIcon={false} aria-label="Демонстрация экрана" title="Демонстрация экрана" captureOptions={{ audio: true, resolution: { width: 1920, height: 1080, frameRate: 30 } }} onDeviceError={() => notify('Демонстрация не началась. Выберите экран или окно в диалоге браузера.')}><MonitorUp size={21} /><span>Поделиться</span></TrackToggle>
+      {window.krugDesktop ? <DesktopShare notify={notify} /> : <TrackToggle source={Track.Source.ScreenShare} showIcon={false} aria-label="Демонстрация экрана" title="Демонстрация экрана" captureOptions={{ audio: true, resolution: { width: 1920, height: 1080, frameRate: 30 } }} onDeviceError={() => notify('Демонстрация не началась. Выберите экран или окно в диалоге браузера.')}><MonitorUp size={21} /><span>Поделиться</span></TrackToggle>}
       <button title="Устройства" aria-label="Настроить устройства" onClick={() => setDevices(true)}><Settings2 size={20} /></button>
       <button className="hangup" title="Выйти из звонка" aria-label="Выйти из звонка" onClick={onLeave}><PhoneOff size={21} /></button>
     </div><StartAudio label="Нажмите, чтобы включить звук" /></div>
