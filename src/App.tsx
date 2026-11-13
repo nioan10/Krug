@@ -15,6 +15,7 @@ export function App() {
   const [bootError, setBootError] = useState('');
   const [channels, setChannels] = useState<Channel[]>([]);
   const [channelsLoaded, setChannelsLoaded] = useState(false);
+  const [unread, setUnread] = useState<Record<string, boolean>>({});
   const [selected, setSelected] = useState('lounge');
   const [online, setOnline] = useState<User[]>([]);
   const [voicePresence, setVoicePresence] = useState<VoicePresence>({ rooms: {}, available: false });
@@ -27,7 +28,7 @@ export function App() {
   const [showChat, setShowChat] = useState(true);
   const notify = useCallback((message: string) => setToast(message), []);
   const leave = useCallback(() => setCall(null), []);
-  const signedOut = useCallback(() => { setUser(null); setCall(null); setModal(null); setChannels([]); setChannelsLoaded(false); setOnline([]); }, []);
+  const signedOut = useCallback(() => { setUser(null); setCall(null); setModal(null); setChannels([]); setChannelsLoaded(false); setOnline([]); setUnread({}); }, []);
   async function boot() {
     setBooting(true); setBootError('');
     try { setUser((await api<{ user: User }>('/me')).user); }
@@ -50,6 +51,7 @@ export function App() {
       socket.onopen = () => { attempts = 0; setConnected(true); };
       socket.onmessage = event => {
         const data = JSON.parse(event.data) as ServerEvent;
+        if (data.type === 'unread') setUnread(data.channels);
         if (data.type === 'presence') setOnline(data.users);
         if (data.type === 'voice-presence') setVoicePresence({ rooms: data.rooms, available: data.available });
         if (data.type === 'channels') { setChannels(data.channels); setChannelsLoaded(true); }
@@ -96,11 +98,11 @@ export function App() {
     <aside className={`sidebar ${mobileNav ? 'mobile-open' : ''}`}><div className="sidebar-brand"><Logo /><span className="version">BETA</span></div>
       <div className="server-label"><div className="server-icon"><AudioLines size={23} /></div><div><strong>Наш круг</strong><span>Частный сервер</span></div><ChevronDown size={16} /></div>
       <div className="sidebar-scroll"><div className="channel-section-label">ОБЩЕНИЕ{user.role === 'admin' && <button title="Создать канал" aria-label="Создать канал" onClick={() => setModal('channel')}><Plus size={15} /></button>}</div>
-        <nav aria-label="Текстовые каналы">{channels.filter(c => c.kind === 'text').map(c => <button key={c.id} className={`channel-link ${current?.id === c.id ? 'selected' : ''}`} onClick={() => { setSelected(c.id); setMobileNav(false); }}><Hash size={19} /><span>{c.name}</span></button>)}</nav>
+        <nav aria-label="Текстовые каналы">{channels.filter(c => c.kind === 'text').map(c => <button key={c.id} className={`channel-link ${current?.id === c.id ? 'selected' : ''}`} onClick={() => { setSelected(c.id); setMobileNav(false); }}><Hash size={19} /><span>{c.name}</span>{unread[c.id] && <span className="unread-marker" role="img" aria-label="Новые сообщения" title="Новые сообщения" />}</button>)}</nav>
         <div className="channel-section-label voice-label">ГОЛОСОВЫЕ КОМНАТЫ<span>{channels.filter(c => c.kind === 'voice').length.toString().padStart(2, '0')}</span></div>
         <nav aria-label="Голосовые комнаты">{channels.filter(c => c.kind === 'voice').map(c => {
           const occupants = connected && voicePresence.available ? voicePresence.rooms[c.id] ?? [] : null;
-          return <div key={c.id} className="voice-room-nav"><button className={`channel-link voice-link ${current?.id === c.id ? 'selected' : ''}`} onClick={() => { setSelected(c.id); setMobileNav(false); }}><Volume2 size={19} /><span>{c.name}</span>{call?.channel.id === c.id && <span className="live-dot" />}<small className="room-count" aria-label={occupants ? `В комнате: ${occupants.length}` : 'Онлайн комнаты недоступен'} title={occupants ? `В комнате: ${occupants.length}` : 'Не удалось получить онлайн комнаты'}>{occupants?.length ?? '—'}</small></button>{Boolean(occupants?.length) && <ul className="room-occupants" aria-label={`Участники комнаты ${c.name}`}>{occupants!.map(person => <li key={person.id}><Avatar name={person.displayName} /><span>{person.displayName}</span>{person.id === user.id && <small>вы</small>}</li>)}</ul>}</div>;
+          return <div key={c.id} className="voice-room-nav"><button className={`channel-link voice-link ${current?.id === c.id ? 'selected' : ''}`} onClick={() => { setSelected(c.id); setMobileNav(false); }}><Volume2 size={19} /><span>{c.name}</span>{unread[c.id] && <span className="unread-marker" role="img" aria-label="Новые сообщения" title="Новые сообщения" />}{call?.channel.id === c.id && <span className="live-dot" />}<small className="room-count" aria-label={occupants ? `В комнате: ${occupants.length}` : 'Онлайн комнаты недоступен'} title={occupants ? `В комнате: ${occupants.length}` : 'Не удалось получить онлайн комнаты'}>{occupants?.length ?? '—'}</small></button>{Boolean(occupants?.length) && <ul className="room-occupants" aria-label={`Участники комнаты ${c.name}`}>{occupants!.map(person => <li key={person.id}><Avatar name={person.displayName} /><span>{person.displayName}</span>{person.id === user.id && <small>вы</small>}</li>)}</ul>}</div>;
         })}</nav>
 
       </div>

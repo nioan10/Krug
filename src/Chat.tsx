@@ -22,6 +22,8 @@ export function Chat({ channel, user, compact = false, notify }: { channel: Chan
   const stick = useRef(true);
   const pending = useRef<ServerEvent[] | null>(null);
   const requestId = useRef(0);
+  const acknowledged = useRef(0);
+  const lastReadAttempt = useRef(0);
   async function refresh() {
     const current = ++requestId.current;
     pending.current = []; setError('');
@@ -47,6 +49,29 @@ export function Chat({ channel, user, compact = false, notify }: { channel: Chan
   useEffect(() => {
     if (stick.current) { scroll.current?.scrollTo({ top: scroll.current.scrollHeight }); setNewBelow(false); }
   }, [messages]);
+  const latestMessageId = messages.at(-1)?.id ?? 0;
+  useEffect(() => {
+    const element = scroll.current;
+    if (!element || loading || error || !latestMessageId) return;
+    let stopped = false; let pendingRead = false;
+    function markVisibleMessages() {
+      if (stopped || pendingRead || latestMessageId <= acknowledged.current || Date.now() - lastReadAttempt.current < 1000 || document.visibilityState !== 'visible' || document.querySelector('dialog[open]') || !element!.clientHeight) return;
+      // Reading older history, a hidden voice chat or a background tab must not clear the marker.
+      if (!stick.current || element!.scrollHeight - element!.scrollTop - element!.clientHeight > 4) return;
+      pendingRead = true;
+      lastReadAttempt.current = Date.now();
+      void api(`/channels/${channel.id}/read`, 'POST', { messageId: latestMessageId })
+        .then(() => { acknowledged.current = Math.max(acknowledged.current, latestMessageId); })
+        .catch(() => { /* Retry after reconnect without hiding unread messages locally. */ })
+        .finally(() => { pendingRead = false; });
+    }
+    markVisibleMessages();
+    element.addEventListener('scroll', markVisibleMessages);
+    document.addEventListener('visibilitychange', markVisibleMessages);
+    window.addEventListener('focus', markVisibleMessages);
+    const retry = setInterval(markVisibleMessages, 2000);
+    return () => { stopped = true; clearInterval(retry); element.removeEventListener('scroll', markVisibleMessages); document.removeEventListener('visibilitychange', markVisibleMessages); window.removeEventListener('focus', markVisibleMessages); };
+  }, [channel.id, latestMessageId, loading, error]);
   async function older() {
     if (!messages[0] || loading) return;
     setLoading(true); const height = scroll.current?.scrollHeight || 0; const top = scroll.current?.scrollTop || 0;

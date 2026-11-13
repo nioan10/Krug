@@ -36,6 +36,12 @@ export function openStore(config: Config) {
       id INTEGER PRIMARY KEY AUTOINCREMENT, channelId TEXT NOT NULL REFERENCES channels(id),
       userId TEXT NOT NULL REFERENCES users(id), body TEXT NOT NULL, createdAt INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS channel_reads (
+      userId TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      channelId TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+      messageId INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (userId, channelId)
+    );
     CREATE INDEX IF NOT EXISTS messages_channel_id ON messages(channelId, id DESC);
     CREATE INDEX IF NOT EXISTS messages_created ON messages(createdAt);
     CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expiresAt);
@@ -63,10 +69,22 @@ export function openStore(config: Config) {
     const row = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as { id: number; channelId: string; userId: string; body: string; createdAt: number } | undefined;
     return row ? { id: row.id, channelId: row.channelId, body: row.body, createdAt: row.createdAt, user: publicUser(row.userId)! } : undefined;
   };
+  const unread = (userId: string) => {
+    const rows = db.prepare(`SELECT c.id,
+      EXISTS(SELECT 1 FROM messages m WHERE m.channelId = c.id AND m.id > COALESCE(r.messageId, 0) AND m.userId != ?) AS unread
+      FROM channels c LEFT JOIN channel_reads r ON r.channelId = c.id AND r.userId = ?`).all(userId, userId) as { id: string; unread: number }[];
+    return Object.fromEntries(rows.map(row => [row.id, Boolean(row.unread)]));
+  };
+  const markRead = (userId: string, channelId: string, messageId: number) => {
+    const latest = db.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM messages WHERE channelId = ?').get(channelId) as { id: number };
+    db.prepare(`INSERT INTO channel_reads (userId, channelId, messageId) VALUES (?, ?, ?)
+      ON CONFLICT(userId, channelId) DO UPDATE SET messageId = MAX(channel_reads.messageId, excluded.messageId)`)
+      .run(userId, channelId, Math.min(messageId, latest.id));
+  };
   const cleanup = () => {
     db.prepare('DELETE FROM sessions WHERE expiresAt <= ?').run(Date.now());
     db.prepare('DELETE FROM invites WHERE expiresAt < ?').run(Date.now() - 7 * DAY);
   };
   cleanup();
-  return { db, publicUser, sessionUser, channel, channels, message, cleanup };
+  return { db, publicUser, sessionUser, channel, channels, message, unread, markRead, cleanup };
 }

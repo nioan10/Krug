@@ -219,3 +219,49 @@ test('media failure is reported as unavailable rather than an empty room', async
   const admin = await owner(app);
   assert.deepEqual((await app.inject({ url: '/api/voice-presence', headers: headers(admin) })).json(), { rooms: {}, available: false });
 });
+
+test('unread markers are private, ignore own messages, acknowledge only seen history and survive restart', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'krug-unread-')); const path = join(directory, 'test.sqlite');
+  let app = await buildApp(config(path));
+  t.after(async () => { await app.close(); rmSync(directory, { recursive: true, force: true }); });
+  const admin = await owner(app); const regular = await member(app, admin);
+  const state = async (cookie: string) => (await app.inject({ url: '/api/unread', headers: headers(cookie) })).json().channels;
+  const post = async (cookie: string, channelId = 'general') => (await app.inject({ method: 'POST', url: `/api/channels/${channelId}/messages`, headers: headers(cookie), payload: { body: 'Unread test' } })).json().message;
+  const read = (cookie: string, messageId: number) => app.inject({ method: 'POST', url: '/api/channels/general/read', headers: headers(cookie), payload: { messageId } });
+  assert.equal((await app.inject('/api/unread')).statusCode, 401);
+  assert.equal((await read('', 1)).statusCode, 401);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/channels/general/read', headers: { cookie: admin, origin: 'https://evil.example' }, payload: { messageId: 1 } })).statusCode, 403);
+  const first = await post(regular);
+  assert.equal((await state(admin)).general, true); assert.equal((await state(regular)).general, false);
+  const second = await post(regular);
+  assert.equal((await read(admin, first.id)).statusCode, 200); assert.equal((await state(admin)).general, true);
+  await read(admin, second.id); await read(admin, first.id); assert.equal((await state(admin)).general, false);
+  await app.close(); app = await buildApp(config(path));
+  assert.equal((await state(admin)).general, false);
+  await read(admin, Number.MAX_SAFE_INTEGER); const third = await post(regular); assert.equal((await state(admin)).general, true);
+  await app.inject({ method: 'DELETE', url: `/api/messages/${third.id}`, headers: headers(regular) }); assert.equal((await state(admin)).general, false);
+  await post(regular, 'lounge'); assert.equal((await state(admin)).lounge, true);
+  assert.equal((await read(admin, -1)).statusCode, 400);
+});
+
+test('read updates reach only the same user across tabs and clearing history removes unread state', async t => {
+  const app = await buildApp(config()); t.after(() => app.close()); const admin = await owner(app); const regular = await member(app, admin);
+  const ownerSocket = await app.injectWS('/api/events', { socket: testSocket, headers: headers(admin) });
+  const friendSocket = await app.injectWS('/api/events', { socket: testSocket, headers: headers(regular) });
+  t.after(() => { ownerSocket.terminate(); friendSocket.terminate(); });
+  const ownerEvents: Record<string, boolean>[] = []; const friendEvents: Record<string, boolean>[] = [];
+  ownerSocket.on('message', bytes => { const event = JSON.parse(bytes.toString()); if (event.type === 'unread') ownerEvents.push(event.channels); });
+  friendSocket.on('message', bytes => { const event = JSON.parse(bytes.toString()); if (event.type === 'unread') friendEvents.push(event.channels); });
+  const response = await app.inject({ method: 'POST', url: '/api/channels/general/messages', headers: headers(regular), payload: { body: 'For the other account' } });
+  await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal(ownerEvents.at(-1)?.general, true); assert.equal(friendEvents.at(-1)?.general, false);
+  const before = friendEvents.length;
+  await app.inject({ method: 'POST', url: '/api/channels/general/read', headers: headers(admin), payload: { messageId: response.json().message.id } });
+  await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal(ownerEvents.at(-1)?.general, false); assert.equal(friendEvents.length, before);
+  await app.inject({ method: 'POST', url: '/api/channels/general/messages', headers: headers(regular), payload: { body: 'Another unread' } });
+  await app.inject({ method: 'DELETE', url: '/api/channels/general/messages', headers: headers(admin), payload: { confirmation: 'общий' } });
+  assert.equal((await app.inject({ url: '/api/unread', headers: headers(admin) })).json().channels.general, false);
+  await app.inject({ method: 'DELETE', url: '/api/channels/general', headers: headers(admin), payload: { confirmation: 'общий' } });
+  assert.equal((await app.inject({ url: '/api/unread', headers: headers(admin) })).json().channels.general, undefined);
+});

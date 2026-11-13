@@ -1,6 +1,7 @@
 import type { Channel, Message, User, VoicePresence } from './api';
 export type ServerEvent =
   | { type: 'ready' }
+  | { type: 'unread'; channels: Record<string, boolean> }
   | { type: 'presence'; users: User[] }
   | { type: 'channels'; channels: Channel[] }
   | { type: 'channel-deleted'; channelId: string }

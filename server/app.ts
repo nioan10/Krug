@@ -89,6 +89,15 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     }
   };
   const presence = () => broadcast({ type: 'presence', users: [...new Map([...sockets.values()].map(s => [s.user.id, s.user])).values()] });
+  const sendUnread = (userId?: string) => {
+    const snapshots = new Map<string, ReturnType<typeof store.unread>>();
+    for (const [socket, state] of sockets) {
+      if (userId && state.user.id !== userId) continue;
+      if (!store.sessionUser(state.hash)) { socket.close(1008, 'Session expired'); continue; }
+      if (!snapshots.has(state.user.id)) snapshots.set(state.user.id, store.unread(state.user.id));
+      send(socket, { type: 'unread', channels: snapshots.get(state.user.id) });
+    }
+  };
   const requireChannel = (id: string) => { const channel = store.channel(id); if (!channel) throw new ApiError(404, 'Канал не найден.'); if (deletingChannels.has(id)) throw new ApiError(409, 'Канал удаляется.'); return channel; };
   const authRate = { rateLimit: { max: 12, timeWindow: '15 minutes' } };
   let voicePresence: { rooms: Record<string, User[]>; available: boolean } = { rooms: {}, available: false };
@@ -171,6 +180,14 @@ export async function buildApp(config: Config, media: MediaService = createMedia
   });
   app.get('/api/me', { preHandler: auth }, async req => ({ user: req.user }));
   app.get('/api/channels', { preHandler: auth }, async () => ({ channels: store.channels() }));
+  app.get('/api/unread', { preHandler: auth }, async req => ({ channels: store.unread(req.user!.id) }));
+  app.post('/api/channels/:id/read', { preHandler: auth }, async req => {
+    const id = channelId(req); requireChannel(id);
+    const { messageId } = z.object({ messageId: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) }).parse(req.body);
+    store.markRead(req.user!.id, id, messageId);
+    sendUnread(req.user!.id);
+    return { ok: true };
+  });
   app.get('/api/voice-presence', { preHandler: auth }, async () => { await refreshVoicePresence(); return voicePresence; });
   app.post('/api/channels', { preHandler: admin }, async (req, reply) => {
     const input = z.object({ name: z.string().trim().min(1).max(32), kind: z.enum(['text', 'voice']), description: z.string().trim().max(120).default('') }).parse(req.body);
@@ -199,6 +216,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
       } catch (error) { db.exec('ROLLBACK'); throw error; }
       const channels = store.channels();
       broadcast({ type: 'channel-deleted', channelId: id });
+      sendUnread();
       broadcast({ type: 'channels', channels });
       delete voicePresence.rooms[id];
       broadcast({ type: 'voice-presence', ...voicePresence });
@@ -217,6 +235,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     const inserted = db.prepare('INSERT INTO messages (channelId, userId, body, createdAt) VALUES (?, ?, ?, ?)').run(id, req.user!.id, body, Date.now());
     const message = store.message(Number(inserted.lastInsertRowid));
     broadcast({ type: 'message', message });
+    sendUnread();
     return reply.code(201).send({ message });
   });
   app.delete('/api/messages/:id', { preHandler: auth }, async req => {
@@ -226,6 +245,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     if (req.user!.role !== 'admin' && message.user.id !== req.user!.id) throw new ApiError(403, 'Нельзя удалить чужое сообщение.');
     db.prepare('DELETE FROM messages WHERE id = ?').run(id);
     broadcast({ type: 'message-deleted', id, channelId: message.channelId });
+    sendUnread();
     return { ok: true };
   });
   app.delete('/api/channels/:id/messages', { preHandler: admin }, async req => {
@@ -234,6 +254,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     if (confirmation !== channel.name) throw new ApiError(400, 'Введите название канала для подтверждения.');
     db.prepare('DELETE FROM messages WHERE channelId = ?').run(id);
     broadcast({ type: 'history-cleared', channelId: id });
+    sendUnread();
     return { ok: true };
   });
   app.post('/api/channels/:id/voice-token', { preHandler: auth, config: { rateLimit: { max: 15, timeWindow: '1 minute' } } }, async req => {
@@ -262,6 +283,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     socket.on('error', () => socket.terminate());
     socket.on('close', () => { sockets.delete(socket); presence(); });
     send(socket, { type: 'ready' }); presence();
+    send(socket, { type: 'unread', channels: store.unread(req.user!.id) });
     send(socket, { type: 'voice-presence', ...voicePresence });
     void refreshVoicePresence();
   });
