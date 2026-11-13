@@ -37,7 +37,8 @@ async function createWindow() {
   ses.setPermissionRequestHandler((contents, permission, callback, details) => {
     let origin = ''; try { origin = new URL(details.requestingUrl).origin; } catch {}
     if (contents !== mainWindow?.webContents || origin !== ORIGIN) return callback(false);
-    if (permission === 'speaker-selection') return callback(true);
+    // Display capture still requires the explicit source picker below.
+    if (permission === 'speaker-selection' || permission === 'display-capture') return callback(true);
     if (permission !== 'media') return callback(false);
     const types = details.mediaTypes || [];
     const devices = [types.includes('audio') ? 'микрофону' : '', types.includes('video') ? 'камере' : ''].filter(Boolean).join(' и ') || 'микрофону или камере';
