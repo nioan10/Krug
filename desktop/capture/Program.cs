@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.Versioning;
 using System.Threading.Channels;
+using System.Runtime.InteropServices;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
@@ -9,16 +10,39 @@ using NAudio.Wave;
 [SupportedOSPlatform("windows")]
 static class Program
 {
+    [DllImport("user32.dll")]
+    static extern uint GetWindowThreadProcessId(nint window, out uint processId);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    static extern bool IsWindow(nint window);
+
     static async Task<int> Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--window" && long.TryParse(args[1], out var handle) && handle > 0)
+        {
+            var window = (nint)handle;
+            if (!IsWindow(window) || GetWindowThreadProcessId(window, out var processId) == 0 || processId == 0)
+            {
+                Console.Error.WriteLine("Selected window no longer exists.");
+                return 1;
+            }
+            try
+            {
+                using var process = Process.GetProcessById((int)processId);
+                Console.WriteLine($"{processId} {process.StartTime.ToUniversalTime().Ticks}");
+            }
+            catch (Exception error) { Console.Error.WriteLine($"Selected process is unavailable: {error.Message}"); return 1; }
+            return 0;
+        }
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 20348))
         {
             Console.Error.WriteLine("Process audio capture requires Windows build 20348 or newer.");
             return 1;
         }
-        if (args.Length != 1 || !int.TryParse(args[0], out var pid) || pid <= 0 || pid == Environment.ProcessId)
+        if (args.Length != 2 || !int.TryParse(args[0], out var pid) || pid <= 0 || pid == Environment.ProcessId || !long.TryParse(args[1], out var expectedStart))
         {
-            Console.Error.WriteLine("Usage: Krug.Capture <selected-process-id>");
+            Console.Error.WriteLine("Usage: Krug.Capture <selected-process-id> <start-time-ticks>");
             return 2;
         }
 
@@ -27,6 +51,7 @@ static class Program
             using var target = Process.GetProcessById(pid);
             // Keep a handle to the original process: a reused PID must never become a new target.
             _ = target.Handle;
+            if (target.StartTime.ToUniversalTime().Ticks != expectedStart) throw new InvalidOperationException("Selected process has changed.");
             if (target.HasExited) throw new InvalidOperationException("Selected process has exited.");
             await using var recorder = await new WasapiRecorderBuilder()
                 .WithProcessLoopback((uint)pid, ProcessLoopbackMode.IncludeTargetProcessTree)
@@ -47,7 +72,11 @@ static class Program
                 packets.Writer.TryWrite(packet);
             };
             Exception? recordingError = null;
-            recorder.RecordingStopped += (_, eventArgs) => { recordingError = eventArgs.Exception; stop.Cancel(); };
+            recorder.RecordingStopped += (_, eventArgs) =>
+            {
+                recordingError = eventArgs.Exception;
+                try { stop.Cancel(); } catch (ObjectDisposedException) { }
+            };
             recorder.StartRecording();
             Console.Error.WriteLine("READY 44100 2 f32le");
 
@@ -59,13 +88,16 @@ static class Program
             });
             var exited = target.WaitForExitAsync(stop.Token);
             // Closing stdin or sending a line stops capture, including when the parent exits.
-            var parentStop = Console.In.ReadLineAsync(stop.Token).AsTask();
+            // Console.In may implement ReadLineAsync synchronously for redirected pipes.
+            // Keep the blocking read on a background thread so process-exit monitoring runs.
+            var parentStop = Task.Run(() => Console.In.ReadLine());
             await Task.WhenAny(writer, exited, parentStop);
             stop.Cancel();
             recorder.StopRecording();
             packets.Writer.TryComplete();
-            try { await writer; } catch (OperationCanceledException) { }
-            if (writer.IsFaulted) await writer;
+            // A broken or stalled parent can leave an anonymous-pipe write blocked;
+            // never wait indefinitely for it during shutdown.
+            if (writer.IsCompleted) { try { await writer; } catch (OperationCanceledException) { } }
             if (recordingError is not null) throw recordingError;
             return 0;
         }
