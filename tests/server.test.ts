@@ -35,18 +35,25 @@ async function member(app: App, admin: string, username = 'member') {
 test('desktop update files require a short-lived update-only token and a safe filename', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'krug-update-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  writeFileSync(join(dir, 'latest.yml'), 'version: 0.1.1\n');
+  writeFileSync(join(dir, 'latest.yml'), 'version: 0.1.1\npath: Krug-Setup-0.1.1.exe\n');
   writeFileSync(join(dir, 'Krug-Setup-0.1.1.exe'), 'fixture');
   const app = await buildApp({ ...config(), DESKTOP_UPDATE_DIR: dir }); t.after(() => app.close());
   assert.equal((await app.inject('/api/desktop-updates/access')).statusCode, 401);
   assert.equal((await app.inject('/api/desktop-updates/latest.yml')).statusCode, 401);
+  assert.equal((await app.inject('/api/desktop-installer')).statusCode, 401);
   const admin = await owner(app);
+  const download = await app.inject({ url: '/api/desktop-installer', headers: headers(admin) });
+  assert.equal(download.statusCode, 200);
+  assert.equal(download.body, 'fixture');
+  assert.match(download.headers['content-disposition'] as string, /attachment/);
   const token = (await app.inject({ url: '/api/desktop-updates/access', headers: headers(admin) })).json().token as string;
   const authorization = { authorization: `Bearer ${token}` };
-  assert.equal((await app.inject({ url: '/api/desktop-updates/latest.yml', headers: authorization })).body, 'version: 0.1.1\n');
+  assert.equal((await app.inject({ url: '/api/desktop-updates/latest.yml', headers: authorization })).body, 'version: 0.1.1\npath: Krug-Setup-0.1.1.exe\n');
   assert.equal((await app.inject({ url: '/api/desktop-updates/Krug-Setup-0.1.1.exe', headers: authorization })).body, 'fixture');
   assert.equal((await app.inject({ url: '/api/desktop-updates/secret.txt', headers: authorization })).statusCode, 404);
   assert.equal((await app.inject({ url: '/api/channels', headers: authorization })).statusCode, 401);
+  writeFileSync(join(dir, 'latest.yml'), 'path: ../../secret.exe\n');
+  assert.equal((await app.inject({ url: '/api/desktop-installer', headers: headers(admin) })).statusCode, 503);
 });
 
 test('passwords use unique salts and reject wrong passwords', async () => {

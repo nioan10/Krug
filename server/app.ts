@@ -7,7 +7,7 @@ import staticFiles from '@fastify/static';
 import { AccessToken } from 'livekit-server-sdk';
 import { randomUUID } from 'node:crypto';
 import { existsSync, createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { z } from 'zod';
 import type { WebSocket } from 'ws';
@@ -181,6 +181,18 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     return { ok: true };
   });
   app.get('/api/me', { preHandler: auth }, async req => ({ user: req.user }));
+  app.get('/api/desktop-installer', { preHandler: auth }, async (_req, reply) => {
+    let manifest: string;
+    try { manifest = await readFile(resolve(config.DESKTOP_UPDATE_DIR, 'latest.yml'), 'utf8'); }
+    catch { throw new ApiError(404, 'Установщик пока недоступен.'); }
+    const file = /^path:\s*(Krug-Setup-\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\.exe)\s*$/m.exec(manifest)?.[1];
+    if (!file) throw new ApiError(503, 'Установщик пока недоступен.');
+    const path = resolve(config.DESKTOP_UPDATE_DIR, file);
+    let info; try { info = await stat(path); } catch { throw new ApiError(404, 'Установщик пока недоступен.'); }
+    if (!info.isFile()) throw new ApiError(404, 'Установщик пока недоступен.');
+    reply.header('Content-Length', info.size).header('Content-Disposition', 'attachment; filename="Okrug-Setup.exe"').type('application/octet-stream');
+    return reply.send(createReadStream(path));
+  });
   app.get('/api/desktop-updates/access', { preHandler: auth }, async () => {
     const now = Date.now();
     for (const [token, expires] of updateTokens) if (expires <= now) updateTokens.delete(token);
