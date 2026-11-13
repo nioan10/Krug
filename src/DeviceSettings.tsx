@@ -1,4 +1,4 @@
-import { memo, useCallback, useState } from 'react';
+import { memo, useCallback, useState, type ReactNode } from 'react';
 import { useMediaDeviceSelect } from '@livekit/components-react';
 import { Modal } from './ui';
 
@@ -25,10 +25,11 @@ function DevicePicker({ kind, label, notify }: { kind: 'audioinput' | 'videoinpu
   </label>;
 }
 
-export const DeviceSettings = memo(function DeviceSettings({ onClose, notify }: { onClose: () => void; notify: Notify }) {
+export const DeviceSettings = memo(function DeviceSettings({ onClose, notify, children }: { onClose: () => void; notify: Notify; children?: ReactNode }) {
   return <Modal title="Звук и камера" onClose={onClose}><div className="form-stack">
     <DevicePicker kind="audioinput" label="Микрофон" notify={notify} />
     <DevicePicker kind="videoinput" label="Камера" notify={notify} />
+    {children}
     <p className="muted">Динамики выбираются в настройках системы. «Выключить звук» заглушает собеседников, ваш микрофон управляется отдельно.</p>
   </div></Modal>;
 });
