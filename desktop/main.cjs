@@ -51,12 +51,12 @@ async function askMediaPermission(devices) {
 }
 async function createWindow() {
   const ses = session.fromPartition('persist:krug');
-  ses.setPermissionCheckHandler((contents, permission, origin) => contents === mainWindow?.webContents && origin === ORIGIN && ['speaker-selection', 'display-capture'].includes(permission));
+  ses.setPermissionCheckHandler((contents, permission, origin) => contents === mainWindow?.webContents && origin === ORIGIN && ['speaker-selection', 'display-capture', 'fullscreen'].includes(permission));
   ses.setPermissionRequestHandler((contents, permission, callback, details) => {
     let origin = ''; try { origin = new URL(details.requestingUrl).origin; } catch {}
     if (contents !== mainWindow?.webContents || origin !== ORIGIN) return callback(false);
     // Display capture still requires the explicit source picker below.
-    if (permission === 'speaker-selection' || permission === 'display-capture') return callback(true);
+    if (['speaker-selection', 'display-capture', 'fullscreen'].includes(permission)) return callback(true);
     if (permission !== 'media') return callback(false);
     const types = details.mediaTypes || [];
     const devices = [types.includes('audio') ? 'микрофону' : '', types.includes('video') ? 'камере' : ''].filter(Boolean).join(' и ') || 'микрофону или камере';
