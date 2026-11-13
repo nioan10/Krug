@@ -4,6 +4,11 @@ dist
 .env*
 data
 backups
+desktop-updates
+desktop/capture/bin
+desktop/capture/obj
+desktop/capture/publish
+release
 .agents
 .agent
 .codex
