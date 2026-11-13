@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { AudioTrack, useLocalParticipant, useRoomContext, useTracks } from '@livekit/components-react';
 import { LocalAudioTrack, Track } from 'livekit-client';
 import { Mic } from 'lucide-react';
-import { incomingLevel, type AudioLevels } from './audio-levels';
+import { incomingLevel, level, type AudioLevels } from './audio-levels';
 import { MicrophoneGain } from './MicrophoneGain';
 
 export function IncomingAudio({ levels, muted }: { levels: AudioLevels; muted: boolean }) {
@@ -12,7 +12,13 @@ export function IncomingAudio({ levels, muted }: { levels: AudioLevels; muted: b
 }
 
 export function VolumeSlider({ label, value, max = 2, onChange }: { label: string; value: number; max?: number; onChange: (value: number) => void }) {
-  return <label className="volume-slider"><span>{label}<output>{Math.round(value * 100)}%</output></span><input type="range" aria-label={label} min="0" max={max * 100} step="5" value={Math.round(value * 100)} aria-valuetext={`${Math.round(value * 100)}%`} onChange={event => onChange(Number(event.target.value) / 100)} /></label>;
+  const id = useId();
+  const percent = Math.round(value * 1000) / 10;
+  const [draft, setDraft] = useState(percent.toFixed(1));
+  const editing = useRef(false);
+  useEffect(() => { if (!editing.current) setDraft(percent.toFixed(1)); }, [percent]);
+  function change(percentValue: number) { if (Number.isFinite(percentValue)) onChange(level(Math.round(percentValue * 10) / 1000, max)); }
+  return <div className="volume-slider"><div className="volume-heading"><label htmlFor={id}>{label}</label><div className="volume-value"><input type="number" aria-label={`${label}, процентов`} inputMode="decimal" min="0" max={max * 100} step="0.1" value={draft} onFocus={() => { editing.current = true; }} onBlur={() => { editing.current = false; setDraft(percent.toFixed(1)); }} onChange={event => { setDraft(event.target.value); change(event.target.valueAsNumber); }} /><span>%</span></div></div><input id={id} type="range" aria-label={label} min="0" max={max * 100} step="0.1" value={percent} aria-valuetext={`${percent.toFixed(1)}%`} onChange={event => change(Number(event.target.value))} /></div>;
 }
 
 export function MicrophoneToggle({ volume, notify }: { volume: number; notify: (message: string) => void }) {
