@@ -1,4 +1,4 @@
-const { app, BrowserWindow, session, desktopCapturer, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, session, desktopCapturer, ipcMain } = require('electron');
 const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const path = require('node:path');
@@ -6,7 +6,7 @@ const { createUpdateController } = require('./update-controller.cjs');
 // Local development is explicit and is unavailable in packaged releases.
 const ORIGIN = !app.isPackaged && process.env.KRUG_DESKTOP_DEV === '1' ? 'http://127.0.0.1:5173' : 'https://chat.nioservices.website';
 const helper = app.isPackaged ? path.join(process.resourcesPath, 'capture', 'Krug.Capture.exe') : path.join(__dirname, 'capture', 'publish', 'Krug.Capture.exe');
-let mainWindow, picker, selectedPid, capture;
+let mainWindow, picker, permissionWindow, selectedPid, capture;
 let updateStatus = { state: 'idle' }, updateController;
 function reportUpdate(status) { updateStatus = status; if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('krug:update-status', status); }
 function fromMain(event) {
@@ -34,6 +34,21 @@ async function chooseSource(sources) {
     current.loadFile(path.join(__dirname, 'picker.html')).catch(() => finish(null));
   });
 }
+async function askMediaPermission(devices) {
+  if (permissionWindow) return false;
+  permissionWindow = new BrowserWindow({ parent: mainWindow, modal: true, width: 480, height: 300, resizable: false, show: false,
+    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, 'permission-preload.cjs') } });
+  const current = permissionWindow;
+  return new Promise(resolve => {
+    let done = false;
+    const finish = value => { if (done) return; done = true; ipcMain.removeListener('krug:permission-choice', onChoice); permissionWindow = undefined; if (!current.isDestroyed()) current.close(); resolve(value); };
+    const onChoice = (event, allow) => { if (event.sender === current.webContents && event.senderFrame === current.webContents.mainFrame) finish(allow === true); };
+    ipcMain.on('krug:permission-choice', onChoice);
+    current.once('closed', () => finish(false));
+    current.webContents.once('did-finish-load', () => { current.webContents.send('krug:permission-devices', devices); current.show(); });
+    current.loadFile(path.join(__dirname, 'permission.html')).catch(() => finish(false));
+  });
+}
 async function createWindow() {
   const ses = session.fromPartition('persist:krug');
   ses.setPermissionCheckHandler((contents, permission, origin) => contents === mainWindow?.webContents && origin === ORIGIN && ['speaker-selection', 'display-capture'].includes(permission));
@@ -45,8 +60,7 @@ async function createWindow() {
     if (permission !== 'media') return callback(false);
     const types = details.mediaTypes || [];
     const devices = [types.includes('audio') ? 'микрофону' : '', types.includes('video') ? 'камере' : ''].filter(Boolean).join(' и ') || 'микрофону или камере';
-    dialog.showMessageBox(mainWindow, { type: 'question', buttons: ['Разрешить', 'Отмена'], defaultId: 1, cancelId: 1, message: `Разрешить Кругу доступ к ${devices}?` })
-      .then(result => callback(result.response === 0)).catch(() => callback(false));
+    askMediaPermission(devices).then(callback).catch(() => callback(false));
   });
   ses.setDisplayMediaRequestHandler(async (request, callback) => {
     selectedPid = undefined;

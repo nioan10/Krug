@@ -33,6 +33,7 @@
       "desktop/update-controller.cjs",
       "desktop/preload.cjs",
       "desktop/picker*",
+      "desktop/permission*",
       "package.json"
     ],
     "extraResources": [
