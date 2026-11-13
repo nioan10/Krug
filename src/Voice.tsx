@@ -6,6 +6,7 @@ import { Avatar, Modal } from './ui';
 import { IncomingAudio, MicrophoneToggle, VolumeSlider } from './AudioControls';
 import { loadAudioLevels, saveAudioLevels } from './audio-levels';
 import { DeviceSettings } from './DeviceSettings';
+import { RestoreAudioOutput } from './AudioOutput';
 import type { Channel } from './api';
 
 export type Call = { channel: Channel; token: string; url: string };
@@ -34,6 +35,7 @@ function CallContent({ onLeave, notify }: { onLeave: () => void; notify: (messag
   const screens = tracks.filter(t => t.source === Track.Source.ScreenShare);
   const cameras = tracks.filter(t => t.source === Track.Source.Camera);
   return <div className="call-content">
+    <RestoreAudioOutput notify={notify} />
     <IncomingAudio levels={levels} muted={deafened} />
     <div className="call-overline"><span className={`connection-label ${state === ConnectionState.Connected ? 'good' : ''}`}><span className="live-dot" />{state === ConnectionState.Connected ? 'Подключено' : state === ConnectionState.Reconnecting || state === ConnectionState.SignalReconnecting ? 'Восстанавливаем связь…' : 'Подключаемся…'}</span><span>{participants.length} в комнате</span></div>
     <div className="call-stage">
