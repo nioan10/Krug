@@ -13,12 +13,13 @@ import type { WebSocket } from 'ws';
 import type { Config } from './config.ts';
 import { openStore, DAY, type User } from './store.ts';
 import { ApiError, digest, hashPassword, newSecret, verifyPassword } from './security.ts';
+import { createMediaService, type MediaService } from './media.ts';
 
 declare module 'fastify' { interface FastifyRequest { user: User | null; sessionHash: string | null } }
 const credentials = z.object({ username: z.string().trim().toLowerCase().regex(/^[a-z0-9_]{3,24}$/), password: z.string().min(12).max(128) });
 const channelId = (request: FastifyRequest) => z.object({ id: z.string().min(1).max(64) }).parse(request.params).id;
 
-export async function buildApp(config: Config) {
+export async function buildApp(config: Config, media: MediaService = createMediaService(config)) {
   const app = Fastify({
     logger: config.NODE_ENV !== 'test' ? { level: 'info', redact: ['req.headers.cookie', 'req.headers.authorization', 'res.headers.set-cookie'] } : false,
     logController: new LogController({ disableRequestLogging: true }), bodyLimit: 16 * 1024,
@@ -28,6 +29,7 @@ export async function buildApp(config: Config) {
   const { db } = store;
   const sockets = new Map<WebSocket, { user: User; hash: string; alive: boolean }>();
   const attempts = new Map<string, { count: number; expires: number }>();
+  const deletingChannels = new Set<string>();
   const dummy = await hashPassword(newSecret());
   const sessionCookie = config.NODE_ENV === 'production' ? '__Host-krug' : 'krug_session';
   const cookieOptions = { httpOnly: true, sameSite: 'strict' as const, secure: config.NODE_ENV === 'production', path: '/', maxAge: 7 * DAY / 1000 };
@@ -87,7 +89,7 @@ export async function buildApp(config: Config) {
     }
   };
   const presence = () => broadcast({ type: 'presence', users: [...new Map([...sockets.values()].map(s => [s.user.id, s.user])).values()] });
-  const requireChannel = (id: string) => { const channel = store.channel(id); if (!channel) throw new ApiError(404, 'Канал не найден.'); return channel; };
+  const requireChannel = (id: string) => { const channel = store.channel(id); if (!channel) throw new ApiError(404, 'Канал не найден.'); if (deletingChannels.has(id)) throw new ApiError(409, 'Канал удаляется.'); return channel; };
   const authRate = { rateLimit: { max: 12, timeWindow: '15 minutes' } };
 
   app.get('/api/health', async () => ({ status: 'ok' }));
@@ -150,6 +152,28 @@ export async function buildApp(config: Config) {
     db.prepare('INSERT INTO channels VALUES (?, ?, ?, ?)').run(channel.id, channel.name, channel.kind, channel.description);
     broadcast({ type: 'channels', channels: store.channels() });
     return reply.code(201).send({ channel });
+  });
+  app.delete('/api/channels/:id', { preHandler: admin }, async req => {
+    const id = channelId(req); const channel = requireChannel(id);
+    const { confirmation } = z.object({ confirmation: z.string() }).parse(req.body);
+    if (confirmation !== channel.name) throw new ApiError(400, 'Введите название канала для подтверждения.');
+    deletingChannels.add(id);
+    try {
+      if (channel.kind === 'voice') {
+        try { await media.deleteRoom(id); }
+        catch { throw new ApiError(503, 'Не удалось завершить звонок. Канал сохранён, попробуйте ещё раз.'); }
+      }
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        db.prepare('DELETE FROM messages WHERE channelId = ?').run(id);
+        db.prepare('DELETE FROM channels WHERE id = ?').run(id);
+        db.exec('COMMIT');
+      } catch (error) { db.exec('ROLLBACK'); throw error; }
+      const channels = store.channels();
+      broadcast({ type: 'channel-deleted', channelId: id });
+      broadcast({ type: 'channels', channels });
+      return { ok: true, channels };
+    } finally { deletingChannels.delete(id); }
   });
   app.get('/api/channels/:id/messages', { preHandler: auth }, async req => {
     const id = channelId(req); requireChannel(id);

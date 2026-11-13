@@ -142,3 +142,53 @@ test('rate limits block repeated login attempts and cannot be bypassed with spoo
   for (let i = 0; i < 13; i++) response = await app.inject({ method: 'POST', url: '/api/auth/login', headers: { ...headers(), 'x-forwarded-for': `203.0.113.${i}` }, payload: { username: 'absent', password } });
   assert.equal(response!.statusCode, 429);
 });
+
+test('deleting a channel requires its owner and name, removes only its messages and notifies clients', async t => {
+  const app = await buildApp(config()); t.after(() => app.close());
+  const admin = await owner(app); const regular = await member(app, admin);
+  const created = (await app.inject({ method: 'POST', url: '/api/channels', headers: headers(admin), payload: { name: 'Удаляемый', kind: 'text' } })).json().channel;
+  for (const id of [created.id, 'general']) await app.inject({ method: 'POST', url: `/api/channels/${id}/messages`, headers: headers(admin), payload: { body: 'Сохранённое сообщение' } });
+  const url = `/api/channels/${created.id}`; const payload = { confirmation: created.name };
+  assert.equal((await app.inject({ method: 'DELETE', url, payload, headers: headers() })).statusCode, 401);
+  assert.equal((await app.inject({ method: 'DELETE', url, payload, headers: headers(regular) })).statusCode, 403);
+  assert.equal((await app.inject({ method: 'DELETE', url, payload, headers: { cookie: admin, origin: 'https://evil.example' } })).statusCode, 403);
+  assert.equal((await app.inject({ method: 'DELETE', url, payload: { confirmation: 'wrong' }, headers: headers(admin) })).statusCode, 400);
+  assert.equal((await app.inject({ url: `${url}/messages`, headers: headers(admin) })).json().messages.length, 1);
+  const socket = await app.injectWS('/api/events', { socket: testSocket, headers: headers(regular) }); t.after(() => socket.terminate());
+  const received = new Promise<string>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Deletion not delivered')), 2000);
+    socket.on('message', data => { const event = JSON.parse(data.toString()); if (event.type === 'channel-deleted') { clearTimeout(timeout); resolve(event.channelId); } });
+  });
+  const deleted = await app.inject({ method: 'DELETE', url, payload, headers: headers(admin) });
+  assert.equal(deleted.statusCode, 200, deleted.body); assert.equal(await received, created.id);
+  assert.ok(!deleted.json().channels.some((c: { id: string }) => c.id === created.id));
+  assert.equal((await app.inject({ url: `${url}/messages`, headers: headers(admin) })).statusCode, 404);
+  assert.equal((await app.inject({ url: '/api/channels/general/messages', headers: headers(admin) })).json().messages.length, 1);
+});
+
+test('voice deletion ends the room before removal, blocks new tokens and preserves the channel on failure', async t => {
+  let rejectDeletion = true; let finish!: () => void; let started!: () => void;
+  const entered = new Promise<void>(resolve => { started = resolve; });
+  const app = await buildApp(config(), { async deleteRoom(id) { assert.equal(id, 'lounge'); if (rejectDeletion) throw new Error('Offline'); started(); await new Promise<void>(resolve => { finish = resolve; }); } });
+  t.after(() => app.close()); const admin = await owner(app);
+  const channels = (await app.inject({ url: '/api/channels', headers: headers(admin) })).json().channels;
+  const payload = { confirmation: channels.find((c: { id: string }) => c.id === 'lounge').name };
+  const request = { method: 'DELETE' as const, url: '/api/channels/lounge', headers: headers(admin), payload };
+  assert.equal((await app.inject(request)).statusCode, 503);
+  assert.equal((await app.inject({ url: '/api/channels/lounge/messages', headers: headers(admin) })).statusCode, 200);
+  rejectDeletion = false; const pending = app.inject(request).then(r => r); await entered;
+  assert.equal((await app.inject({ method: 'POST', url: '/api/channels/lounge/voice-token', headers: headers(admin) })).statusCode, 409);
+  finish(); assert.equal((await pending).statusCode, 200);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/channels/lounge/voice-token', headers: headers(admin) })).statusCode, 404);
+});
+
+test('an empty channel list survives a restart', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'krug-empty-')); const path = join(directory, 'test.sqlite');
+  let app = await buildApp(config(path), { async deleteRoom() {} });
+  t.after(async () => { await app.close(); rmSync(directory, { recursive: true, force: true }); });
+  const admin = await owner(app);
+  const channels = (await app.inject({ url: '/api/channels', headers: headers(admin) })).json().channels;
+  for (const channel of channels) assert.equal((await app.inject({ method: 'DELETE', url: `/api/channels/${channel.id}`, headers: headers(admin), payload: { confirmation: channel.name } })).statusCode, 200);
+  await app.close(); app = await buildApp(config(path));
+  assert.deepEqual((await app.inject({ url: '/api/channels', headers: headers(admin) })).json().channels, []);
+});

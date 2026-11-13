@@ -32,22 +32,28 @@ export function CreateChannel({ onClose, notify, onCreated }: { onClose: () => v
   }
   return <Modal title="Создать канал" onClose={onClose}><form className="form-stack" onSubmit={submit}><label>Название<input name="name" required maxLength={32} autoFocus placeholder="Например, Кино по пятницам" /></label><label>Тип<select name="kind"><option value="voice">Голосовая комната</option><option value="text">Текстовый канал</option></select></label><label>Описание<input name="description" maxLength={120} placeholder="Описание канала" /></label><button className="primary" disabled={busy}>{busy ? 'Создаём…' : 'Создать канал'}</button></form></Modal>;
 }
-export function Settings({ user, channel, onClose, notify, onLogout }: { user: User; channel: Channel; onClose: () => void; notify: (s: string) => void; onLogout: () => void }) {
+export function Settings({ user, channel, onClose, notify, onLogout, onDeleted }: { user: User; channel?: Channel; onClose: () => void; notify: (s: string) => void; onLogout: () => void; onDeleted: (channels: Channel[]) => void }) {
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   async function password(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true);
     try { await api('/auth/password', 'POST', Object.fromEntries(new FormData(event.currentTarget))); onLogout(); notify('Пароль обновлён. Войдите заново.'); }
     catch (e) { notify(errorText(e)); } finally { setBusy(false); }
   }
   async function clear(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setBusy(true);
+    event.preventDefault(); if (!channel) return; setBusy(true);
     try { await api(`/channels/${channel.id}/messages`, 'DELETE', Object.fromEntries(new FormData(event.currentTarget))); notify('История канала удалена.'); onClose(); }
+    catch (e) { notify(errorText(e)); } finally { setBusy(false); }
+  }
+  async function removeChannel(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); if (!channel) return; setBusy(true);
+    try { const result = await api<{ channels: Channel[] }>(`/channels/${channel.id}`, 'DELETE', Object.fromEntries(new FormData(event.currentTarget))); onDeleted(result.channels); notify(`Канал «${channel.name}» удалён.`); }
     catch (e) { notify(errorText(e)); } finally { setBusy(false); }
   }
   return <Modal title="Настройки" onClose={onClose}><div className="settings-identity"><ShieldCheck size={21} /><div><strong>{user.displayName}</strong><span>@{user.username} · {user.role === 'admin' ? 'Владелец' : 'Участник'}</span></div></div>
     <form className="form-stack" onSubmit={password}><h3>Сменить пароль</h3><label>Текущий пароль<input name="currentPassword" type="password" autoComplete="current-password" required maxLength={128} /></label><label>Новый пароль<input name="password" type="password" autoComplete="new-password" required minLength={12} maxLength={128} placeholder="Не менее 12 символов" /></label><p className="tiny">После смены пароля потребуется заново войти на всех устройствах.</p><button className="secondary" disabled={busy}>Обновить пароль</button></form>
     <div className="security-note"><h3>Как устроена приватность</h3><p>На сервере используется шифрование соединений. Сквозного шифрования пока нет: владельцу сервера доступны история и медиатрафик. Запись звонков не ведётся.</p><p>История чата хранится бессрочно. Удалить свои сообщения можно в чате; владелец может очистить канал целиком.</p></div>
-    {user.role === 'admin' && <div className="danger-zone"><h3>История «{channel.name}»</h3>{confirming ? <form className="form-stack" onSubmit={clear}><p>Все сообщения этого канала будут удалены без возможности восстановления из приложения. Резервные копии это действие не затрагивает.</p><label>Для подтверждения введите: {channel.name}<input name="confirmation" required autoComplete="off" /></label><button className="danger" disabled={busy}>Удалить всю историю канала</button></form> : <button className="danger-text" onClick={() => setConfirming(true)}><Trash2 size={16} />Очистить историю канала</button>}</div>}
+    {user.role === 'admin' && channel && <div className="danger-zone"><h3>Канал «{channel.name}»</h3>{deleting ? <form className="form-stack" onSubmit={removeChannel}><p>Канал и все его сообщения будут удалены. {channel.kind === 'voice' && 'Участники будут отключены от звонка. '}Резервные копии сохранятся.</p><label>Для подтверждения введите: {channel.name}<input name="confirmation" required autoComplete="off" /></label><button className="danger" disabled={busy}>{busy ? 'Удаляем…' : 'Удалить канал и сообщения'}</button><button className="secondary" type="button" disabled={busy} onClick={() => setDeleting(false)}>Отмена</button></form> : confirming ? <form className="form-stack" onSubmit={clear}><p>Все сообщения этого канала будут удалены без возможности восстановления из приложения. Резервные копии это действие не затрагивает.</p><label>Для подтверждения введите: {channel.name}<input name="confirmation" required autoComplete="off" /></label><button className="danger" disabled={busy}>Удалить всю историю канала</button><button className="secondary" type="button" disabled={busy} onClick={() => setConfirming(false)}>Отмена</button></form> : <div className="form-stack"><button className="danger-text" onClick={() => setConfirming(true)}><Trash2 size={16} />Очистить историю канала</button><button className="danger-text" onClick={() => setDeleting(true)}><Trash2 size={16} />Удалить канал</button></div>}</div>}
   </Modal>;
 }

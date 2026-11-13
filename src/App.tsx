@@ -14,6 +14,7 @@ export function App() {
   const [booting, setBooting] = useState(true);
   const [bootError, setBootError] = useState('');
   const [channels, setChannels] = useState<Channel[]>([]);
+  const [channelsLoaded, setChannelsLoaded] = useState(false);
   const [selected, setSelected] = useState('lounge');
   const [online, setOnline] = useState<User[]>([]);
   const [connected, setConnected] = useState(false);
@@ -25,7 +26,7 @@ export function App() {
   const [showChat, setShowChat] = useState(true);
   const notify = useCallback((message: string) => setToast(message), []);
   const leave = useCallback(() => setCall(null), []);
-  const signedOut = useCallback(() => { setUser(null); setCall(null); setModal(null); setChannels([]); setOnline([]); }, []);
+  const signedOut = useCallback(() => { setUser(null); setCall(null); setModal(null); setChannels([]); setChannelsLoaded(false); setOnline([]); }, []);
   async function boot() {
     setBooting(true); setBootError('');
     try { setUser((await api<{ user: User }>('/me')).user); }
@@ -38,7 +39,7 @@ export function App() {
     if (!user) return;
     let stopped = false; let socket: WebSocket | undefined; let timer: ReturnType<typeof setTimeout>; let attempts = 0;
     async function loadChannels() {
-      try { const result = await api<{ channels: Channel[] }>('/channels'); if (!stopped) setChannels(result.channels); }
+      try { const result = await api<{ channels: Channel[] }>('/channels'); if (!stopped) { setChannels(result.channels); setChannelsLoaded(true); } }
       catch (e) { if (!stopped) notify(errorText(e)); }
     }
     void loadChannels();
@@ -49,7 +50,12 @@ export function App() {
       socket.onmessage = event => {
         const data = JSON.parse(event.data) as ServerEvent;
         if (data.type === 'presence') setOnline(data.users);
-        if (data.type === 'channels') setChannels(data.channels);
+        if (data.type === 'channels') { setChannels(data.channels); setChannelsLoaded(true); }
+        if (data.type === 'channel-deleted') {
+          setCall(previous => previous?.channel.id === data.channelId ? null : previous);
+          setChannels(previous => previous.filter(c => c.id !== data.channelId));
+          setSelected(previous => previous === data.channelId ? '' : previous);
+        }
         if (data.type === 'ready') void loadChannels();
         emit(data);
       };
@@ -68,6 +74,9 @@ export function App() {
     connect();
     return () => { stopped = true; clearTimeout(timer); socket?.close(); setConnected(false); };
   }, [user?.id, notify, signedOut]);
+  useEffect(() => {
+    if (channelsLoaded && call && !channels.some(c => c.id === call.channel.id)) { setCall(null); notify('Голосовая комната удалена.'); }
+  }, [channelsLoaded, channels, call, notify]);
   async function logout() { try { await api('/auth/logout', 'POST'); signedOut(); } catch (e) { notify(errorText(e)); } }
   async function join(channel: Channel) {
     if (joining) return;
@@ -96,7 +105,7 @@ export function App() {
       <div className="profile"><Avatar name={user.displayName} /><div className="profile-name"><strong>{user.displayName}</strong><span><i className={connected ? 'online-dot' : 'offline-dot'} />{connected ? 'На связи' : 'Переподключение…'}</span></div><button className="icon-button" title="Настройки" aria-label="Настройки" onClick={() => setModal('settings')}><Settings2 size={18} /></button><button className="icon-button" title="Выйти из аккаунта" aria-label="Выйти из аккаунта" onClick={() => void logout()}><LogOut size={17} /></button></div>
     </aside>
     <main className="main-app">
-      <header className="topbar"><button className="mobile-menu icon-button" aria-label="Открыть меню" onClick={() => setMobileNav(true)}><Menu size={22} /></button><span className="header-channel-icon">{current?.kind === 'voice' ? <Volume2 size={22} /> : <Hash size={22} />}</span><h1>{current?.name || 'Ваши каналы'}</h1><span className="header-divider" /><p>{current?.description}</p><div className="header-actions"><span className="private-badge"><LockKeyhole size={13} />По приглашению</span>{current?.kind === 'voice' && <button className={`icon-button ${showChat ? 'active' : ''}`} title="Чат комнаты" aria-label="Показать или скрыть чат" aria-pressed={showChat} onClick={() => setShowChat(!showChat)}><MessageSquare size={19} /></button>}</div></header>
+      <header className="topbar"><button className="mobile-menu icon-button" aria-label="Открыть меню" onClick={() => setMobileNav(true)}><Menu size={22} /></button><span className="header-channel-icon">{current?.kind === 'voice' ? <Volume2 size={22} /> : <Hash size={22} />}</span><h1>{current?.name || 'Ваши каналы'}</h1><span className="header-divider" /><p>{current?.description}</p><div className="header-actions">{user.role === 'admin' && current && <button className="icon-button" title="Настройки канала" aria-label="Настройки канала" onClick={() => setModal('settings')}><Settings2 size={19} /></button>}<span className="private-badge"><LockKeyhole size={13} />По приглашению</span>{current?.kind === 'voice' && <button className={`icon-button ${showChat ? 'active' : ''}`} title="Чат комнаты" aria-label="Показать или скрыть чат" aria-pressed={showChat} onClick={() => setShowChat(!showChat)}><MessageSquare size={19} /></button>}</div></header>
       <AppUpdate inCall={Boolean(call)} />
       {!connected && <div className="reconnect-banner">Восстанавливаем связь с чатом. Новые сообщения появятся после подключения.</div>}
       {current ? <div className={`workspace ${current.kind === 'text' ? 'text-workspace' : ''}`}>
@@ -107,11 +116,11 @@ export function App() {
         </div>
         {current.kind === 'voice' && showChat && <Chat key={current.id} channel={current} user={user} compact notify={notify} />}
         {current.kind === 'text' && <aside className="members"><div className="members-heading"><Users size={16} />НА СВЯЗИ <span>{online.length}</span></div>{online.map(person => <div className="member" key={person.id}><Avatar name={person.displayName} /><div><strong>{person.displayName}{person.id === user.id && <small>вы</small>}</strong><span>{person.role === 'admin' ? 'Владелец' : 'Участник'}</span></div><i className="online-dot" /></div>)}</aside>}
-      </div> : <div className="loading-page"><p>Загружаем каналы…</p><button className="secondary" onClick={() => location.reload()}>Обновить</button></div>}
+      </div> : <div className="loading-page"><p>{channelsLoaded ? 'Каналов пока нет.' : 'Загружаем каналы…'}</p>{channelsLoaded ? user.role === 'admin' && <button className="primary" onClick={() => setModal('channel')}>Создать канал</button> : <button className="secondary" onClick={() => location.reload()}>Обновить</button>}</div>}
     </main>
     {modal === 'invite' && <InviteModal onClose={() => setModal(null)} notify={notify} />}
     {modal === 'channel' && <CreateChannel onClose={() => setModal(null)} notify={notify} onCreated={channel => { setChannels(old => [...old.filter(c => c.id !== channel.id), channel]); setSelected(channel.id); }} />}
-    {modal === 'settings' && current && <Settings user={user} channel={current} onClose={() => setModal(null)} notify={notify} onLogout={signedOut} />}
+    {modal === 'settings' && <Settings key={current?.id || 'account'} user={user} channel={current} onClose={() => setModal(null)} notify={notify} onLogout={signedOut} onDeleted={remaining => { setChannels(remaining); setSelected(remaining[0]?.id || ''); setModal(null); }} />}
     {toastView}
   </div>;
 }
