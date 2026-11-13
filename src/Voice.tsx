@@ -1,8 +1,9 @@
-import { useState } from 'react';
-import { LiveKitRoom, RoomAudioRenderer, TrackToggle, useParticipants, useTracks, VideoTrack, useIsSpeaking, useConnectionState, StartAudio, MediaDeviceSelect } from '@livekit/components-react';
+import { useCallback, useState } from 'react';
+import { LiveKitRoom, RoomAudioRenderer, TrackToggle, useParticipants, useTracks, VideoTrack, useIsSpeaking, useConnectionState, StartAudio } from '@livekit/components-react';
 import { Track, ConnectionState, type Participant, type RoomOptions } from 'livekit-client';
 import { Headphones, HeadphoneOff, Mic, MicOff, MonitorUp, PhoneOff, Settings2, Video, Maximize2, Radio } from 'lucide-react';
-import { Avatar, Modal } from './ui';
+import { Avatar } from './ui';
+import { DeviceSettings } from './DeviceSettings';
 import type { Channel } from './api';
 
 export type Call = { channel: Channel; token: string; url: string };
@@ -21,6 +22,7 @@ function CallContent({ onLeave, notify }: { onLeave: () => void; notify: (messag
   const state = useConnectionState();
   const [deafened, setDeafened] = useState(false);
   const [devices, setDevices] = useState(false);
+  const closeDevices = useCallback(() => setDevices(false), []);
   const screens = tracks.filter(t => t.source === Track.Source.ScreenShare);
   const cameras = tracks.filter(t => t.source === Track.Source.Camera);
   return <div className="call-content">
@@ -42,9 +44,11 @@ function CallContent({ onLeave, notify }: { onLeave: () => void; notify: (messag
       <button title="Устройства" aria-label="Настроить устройства" onClick={() => setDevices(true)}><Settings2 size={20} /></button>
       <button className="hangup" title="Выйти из звонка" aria-label="Выйти из звонка" onClick={onLeave}><PhoneOff size={21} /></button>
     </div><StartAudio label="Нажмите, чтобы включить звук" /></div>
-    {devices && <Modal title="Звук и камера" onClose={() => setDevices(false)}><div className="form-stack"><label>Микрофон<MediaDeviceSelect kind="audioinput" requestPermissions onError={() => notify('Не удалось выбрать микрофон.')} /></label><label>Камера<MediaDeviceSelect kind="videoinput" onError={() => notify('Не удалось выбрать камеру.')} /></label><p className="muted">Динамики выбираются в настройках системы. «Выключить звук» заглушает собеседников, ваш микрофон управляется отдельно.</p></div></Modal>}
+    {devices && <DeviceSettings onClose={closeDevices} notify={notify} />}
   </div>;
 }
 export function Voice({ call, onLeave, notify }: { call: Call; onLeave: () => void; notify: (s: string) => void }) {
-  return <LiveKitRoom token={call.token} serverUrl={call.url} options={options} connect audio={false} video={false} onDisconnected={onLeave} onError={() => notify('Не удалось подключиться к медиасерверу. Проверьте соединение и попробуйте снова.')} onMediaDeviceFailure={() => notify('Браузер не дал доступ к устройству. Можно остаться слушателем и включить микрофон позже.')}><CallContent onLeave={onLeave} notify={notify} /></LiveKitRoom>;
+  const onError = useCallback(() => notify('Не удалось подключиться к медиасерверу. Проверьте соединение и попробуйте снова.'), [notify]);
+  const onMediaDeviceFailure = useCallback(() => notify('Браузер не дал доступ к устройству. Можно остаться слушателем и включить микрофон позже.'), [notify]);
+  return <LiveKitRoom token={call.token} serverUrl={call.url} options={options} connect audio={false} video={false} onDisconnected={onLeave} onError={onError} onMediaDeviceFailure={onMediaDeviceFailure}><CallContent onLeave={onLeave} notify={notify} /></LiveKitRoom>;
 }
