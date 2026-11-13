@@ -1,4 +1,4 @@
-const { app, BrowserWindow, session, desktopCapturer, ipcMain } = require('electron');
+const { app, BrowserWindow, session, desktopCapturer, ipcMain, Menu, nativeTheme } = require('electron');
 const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const path = require('node:path');
@@ -144,5 +144,9 @@ function configureUpdates() {
   mainWindow.on('focus', () => void check());
   setInterval(() => void check(), 10 * 60 * 1000).unref();
 }
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  Menu.setApplicationMenu(null);
+  nativeTheme.themeSource = 'dark';
+  return createWindow();
+});
 app.on('window-all-closed', () => app.quit());
