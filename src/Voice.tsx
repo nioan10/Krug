@@ -14,7 +14,7 @@ import { RestoreAudioOutput } from './AudioOutput';
 import { api, type Channel, type VoiceOccupant } from './api';
 import { DesktopShare } from './DesktopShare';
 import { hasVisibleCamera } from './camera-state';
-import { ScreenShareTile } from './ScreenShareTile';
+import { ScreenShares } from './ScreenShares';
 
 export type Call = { channel: Channel; token: string; url: string; e2ee?: { key: ArrayBuffer; roster: string } };
 const options: RoomOptions = {
@@ -119,16 +119,17 @@ function CallContent({ room, onLeave, notify, channelId, presence }: { room: Roo
     <IncomingAudio levels={levels} muted={deafened} />
     <div className="call-overline"><span className={`connection-label ${state === ConnectionState.Connected ? 'good' : ''}`}><span className="live-dot" />{state === ConnectionState.Connected ? 'Подключено' : state === ConnectionState.Reconnecting || state === ConnectionState.SignalReconnecting ? 'Восстанавливаем связь…' : 'Подключаемся…'}{state === ConnectionState.Connected && <span className="call-ping" title="Задержка до голосового сервера">{ping === null ? 'Пинг —' : `${ping} мс`}</span>}</span><span>{room.options.encryption ? '🔒 Сквозное шифрование · ' : ''}{participants.length} в комнате</span></div>
     <div className="call-stage">
-      {screens.map(track => <ScreenShareTile key={track.publication.trackSid} track={track} notify={notify} audio={{
+      <ScreenShares screens={screens} notify={notify} audioFor={track => ({
         available: tracks.some(t => t.source === Track.Source.ScreenShareAudio && t.participant.identity === track.participant.identity),
         volume: screenLevel(levels, track.participant.identity, participantUserId(track.participant)), deafened,
         onVolume: value => setLevels(old => ({ ...old, screens: { ...old.screens, [track.participant.identity]: value } })),
-      }} />)}
+      })}>
       <div className={`people-grid ${screens.length ? 'with-screen' : ''}`}>{participants.map(p => {
         const camera = cameras.find(t => t.participant.identity === p.identity);
         const audioState = p.isLocal ? deafened : presence.find(person => (person.identity ?? person.id) === p.identity)?.deafened ?? null;
         return <ParticipantTile participant={p} camera={camera} key={p.identity} onVolume={() => openVolume(p)} deafened={audioState} afk={p.isLocal ? afk : Boolean(presence.find(person => (person.identity ?? person.id) === p.identity)?.afk)} />;
       })}</div>
+      </ScreenShares>
       {participants.length === 1 && !screens.length && <div className="waiting-note"><Radio size={18} /><span>В комнате пока только вы.</span></div>}
     </div>
     <div className="call-controls"><div className="control-group">
