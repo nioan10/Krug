@@ -21,6 +21,7 @@ import { decodeImage } from './image-attachment.ts';
 import { registerBroadcasts } from './broadcast-routes.ts';
 import type { StreamMedia } from './stream-media.ts';
 import { sessionStore } from './sessions.ts';
+import { registerEncryption } from './encryption.ts';
 
 declare module 'fastify' { interface FastifyRequest { user: User | null; sessionHash: string | null } }
 const credentials = z.object({ username: z.string().trim().toLowerCase().regex(/^[a-z0-9_]{3,24}$/), password: z.string().min(12).max(128) });
@@ -165,7 +166,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
         const blockedIds = new Set(blocked.map(row => row.userId));
         const removals = Object.entries(rooms).flatMap(([room, occupants]) => occupants.filter(person => {
           const lease = sessions.voice(person.identity);
-          return blockedIds.has(lease?.userId ?? person.identity) || blockedIds.has(`legacy:${person.identity}`) || (lease ? !sessions.active(lease.sessionHash) : person.identity.startsWith('session-'));
+          return blockedIds.has(lease?.userId ?? person.identity) || blockedIds.has(`legacy:${person.identity}`) || (lease ? !sessions.active(lease.sessionHash) : person.identity.startsWith('session-')) || (encryption.enabled() && person.room !== `${room}.e2ee.${encryption.roster()}`);
         }).map(person => media.removeParticipant(person.room ?? room, person.identity)));
         if ((await Promise.allSettled(removals)).some(result => result.status === 'rejected')) ok = false;
       } catch { ok = false; }
@@ -186,6 +187,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
   }
   async function finishRevocation(userId: string) {
     closeUserSessions(userId);
+    encryption.changed();
     broadcast({ type: 'members-updated' });
     // A sweep already in progress may have started before this user was blocked.
     if (accessSweep) await accessSweep;
@@ -198,6 +200,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     if (!selected.size) return { ok: true, disconnected: true };
     for (const hash of selected) db.prepare('DELETE FROM sessions WHERE hash=? AND userId=?').run(hash, userId);
     for (const [socket, state] of sockets) if (selected.has(state.hash)) socket.close(1008, 'Session revoked');
+    encryption.changed();
     // Also remove legacy connections, which did not carry a session identity.
     db.prepare('INSERT OR IGNORE INTO blocked_voice_identities (userId,blockedAt,needsStream) VALUES (?, ?, 0)').run(`legacy:${userId}`, Date.now());
     if (accessSweep) await accessSweep;
@@ -217,6 +220,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     if (!selected) throw new ApiError(404, 'Сессия не найдена.');
     return revokeSessions(req.user!.id, [selected.hash]);
   });
+  const encryption = registerEncryption(app, store, sessions, auth, admin, broadcast);
 
   app.get('/api/health', async () => ({ status: 'ok' }));
   app.post('/api/auth/register', { config: authRate }, async (req, reply) => {
@@ -460,6 +464,20 @@ export async function buildApp(config: Config, media: MediaService = createMedia
   });
   app.post('/api/channels/:id/messages', { preHandler: auth, bodyLimit: 7 * 1024 * 1024, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req, reply) => {
     const id = channelId(req); requireChannel(id);
+    if (encryption.enabled()) {
+      const input = z.object({ encrypted: z.unknown(), image: z.string().optional() }).strict().parse(req.body);
+      const envelope = encryption.validate(req, input.encrypted), attachment = encryption.cipherImage(input.image);
+      if (db.prepare('SELECT 1 FROM messages WHERE clientId=?').get(envelope.clientId)) throw new ApiError(409, 'Это сообщение уже отправлено.');
+      db.exec('BEGIN IMMEDIATE');
+      let message;
+      try {
+        const row = db.prepare("INSERT INTO messages (channelId,userId,body,createdAt,encrypted,clientId) VALUES (?,?,'',?,?,?)").run(id, req.user!.id, Date.now(), JSON.stringify(envelope), envelope.clientId);
+        if (attachment) db.prepare("INSERT INTO message_images VALUES (?,'application/octet-stream',?)").run(Number(row.lastInsertRowid), attachment);
+        message = store.message(Number(row.lastInsertRowid)); db.exec('COMMIT');
+      } catch (e) { db.exec('ROLLBACK'); throw e; }
+      broadcast({ type: 'message', message }); sendUnread();
+      return reply.code(201).send({ message });
+    }
     const { body, image } = z.object({ body: z.string().trim().max(4000), image: z.string().max(7 * 1024 * 1024).optional() }).parse(req.body);
     if (!body && !image) throw new ApiError(400, 'Напишите сообщение или прикрепите изображение.');
     const attachment = image ? decodeImage(image) : null;
@@ -510,11 +528,18 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     const channel = requireChannel(channelId(req));
     if (channel.kind !== 'voice') throw new ApiError(400, 'Это текстовый канал.');
     const identity = sessions.identity(req.sessionHash!, req.user!.id);
-    const roomName = channel.id;
+    let roomName = channel.id;
+    if (encryption.enabled()) {
+      encryption.own(req);
+      const input = z.object({ roster: z.string() }).parse(req.body);
+      if (input.roster !== encryption.roster()) throw new ApiError(409, 'Состав устройств изменился. Подключитесь заново.');
+      roomName = `${channel.id}.e2ee.${input.roster}`;
+    }
     const token = new AccessToken(config.LIVEKIT_API_KEY, config.LIVEKIT_API_SECRET, { identity, name: req.user!.displayName, metadata: JSON.stringify({ userId: req.user!.id }), ttl: '2m' });
     token.addGrant({ roomJoin: true, room: roomName, canPublish: true, canSubscribe: true, canPublishData: false, canUpdateOwnMetadata: false });
     const signed = await token.toJwt();
     await auth(req);
+    if (encryption.enabled() && roomName !== `${channel.id}.e2ee.${encryption.roster()}`) throw new ApiError(409, 'Состав устройств изменился. Повторите подключение.');
     return { token: signed, url: config.LIVEKIT_URL };
   });
   const member = (id: string) => {

@@ -19,20 +19,28 @@ export function createMediaService(config: Config): MediaService {
   const missing = (error: unknown) => error instanceof ServerError && error.code === 'not_found';
   return {
     async deleteRoom(id) {
-      try { await client.deleteRoom(id); }
-      catch (error) { if (!missing(error)) throw error; }
+      const rooms = await client.listRooms();
+      for (const room of rooms.filter(r => r.name === id || r.name.startsWith(`${id}.e2ee.`))) {
+        try { await client.deleteRoom(room.name); } catch (error) { if (!missing(error)) throw error; }
+      }
     },
     async removeParticipant(channelId, userId) {
-      try { await client.removeParticipant(channelId, userId); }
-      catch (error) { if (!missing(error)) throw error; }
+      const rooms = await client.listRooms();
+      for (const room of rooms.filter(r => r.name === channelId || r.name.startsWith(`${channelId}.e2ee.`))) {
+        try { await client.removeParticipant(room.name, userId); } catch (error) { if (!missing(error)) throw error; }
+      }
     },
     async participants(channelIds) {
       if (!channelIds.length) return {};
-      const rooms = await client.listRooms(channelIds);
-      return Object.fromEntries(await Promise.all(rooms.filter(room => channelIds.includes(room.name) && room.numParticipants > 0).map(async room => {
-        try { return [room.name, (await client.listParticipants(room.name)).map(voiceOccupant)]; }
-        catch (error) { if (missing(error)) return [room.name, []]; throw error; }
-      })));
+      const rooms = await client.listRooms();
+      const result: Record<string, VoiceOccupant[]> = {};
+      await Promise.all(rooms.filter(room => room.numParticipants > 0).map(async room => {
+        const channel = channelIds.find(id => room.name === id || room.name.startsWith(`${id}.e2ee.`));
+        if (!channel) return;
+        try { const people = (await client.listParticipants(room.name)).map(p => ({ ...voiceOccupant(p), room: room.name })); (result[channel] ??= []).push(...people); }
+        catch (error) { if (!missing(error)) throw error; }
+      }));
+      return result;
     },
   };
 }

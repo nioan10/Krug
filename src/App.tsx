@@ -1,4 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { mentionNames } from '../server/mentions';
+import { EncryptionContext, useEncryptionController } from './EncryptionSettings';
+import { forgetEncryptionMemory } from './encryption';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowUpRight, AudioLines, ChevronDown, Hash, Headphones, HeadphoneOff, LockKeyhole, LogOut, Menu, MessageSquare, Mic, MicOff, MonitorUp, PhoneOff, Plus, Radio, Settings2, ShieldCheck, Signal, UserPlus, Users, Volume2, X } from 'lucide-react';
 import { api, errorText, HttpError, type Channel, type User, type VoicePresence } from './api';
 import { emit, type ServerEvent } from './events';
@@ -15,6 +18,8 @@ declare const __KRUG_VERSION__: string;
 
 export function App() {
   const [user, setUser] = useState<User | null>(null);
+  const encryption = useEncryptionController(user);
+  const encryptionRef = useRef(encryption.manager); encryptionRef.current = encryption.manager;
   const [booting, setBooting] = useState(true);
   const [bootError, setBootError] = useState('');
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -37,7 +42,7 @@ export function App() {
   const [showChat, setShowChat] = useState(true);
   const notify = useCallback((message: string) => setToast(message), []);
   const leave = useCallback(() => setCall(null), []);
-  const signedOut = useCallback(() => { setUser(null); setCall(null); setModal(null); setChannels([]); setChannelsLoaded(false); setOnline([]); setUnread({}); }, []);
+  const signedOut = useCallback(() => { forgetEncryptionMemory(); setUser(null); setCall(null); setModal(null); setChannels([]); setChannelsLoaded(false); setOnline([]); setUnread({}); }, []);
   async function boot() {
     setBooting(true); setBootError('');
     try { setUser((await api<{ user: User }>('/me')).user); }
@@ -68,6 +73,9 @@ export function App() {
         const data = JSON.parse(event.data) as ServerEvent;
         if (data.type === 'unread') setUnread(data.channels);
         if (data.type === 'presence') setOnline(data.users);
+        if (data.type === 'message' && data.message.encrypted && data.message.user.id !== user!.id) {
+          void encryptionRef.current?.decryptMessage(data.message).then(plain => { if (!stopped && plain && !plain.migrationOf && mentionNames(plain.body).includes(user!.username)) notify(`${data.message.user.displayName} упомянул(а) вас в чате`); }).catch(() => {});
+        }
         if (data.type === 'mention') notify(`${data.author} упомянул(а) вас в «${data.channelName}»`);
         if (data.type === 'voice-presence') setVoicePresence({ rooms: data.rooms, available: data.available });
         if (data.type === 'channels') { setChannels(data.channels); setChannelsLoaded(true); }
@@ -101,7 +109,13 @@ export function App() {
   async function join(channel: Channel) {
     if (joining) return;
     setJoining(true);
-    try { const result = await api<{ token: string; url: string }>(`/channels/${channel.id}/voice-token`, 'POST'); setCall({ channel, ...result }); }
+    try {
+      if (!encryption.manager || encryption.error) throw Error(encryption.error || 'Подготавливаем ключи устройства. Повторите подключение через несколько секунд.');
+      await encryption.manager.refresh();
+      const e2ee = encryption.manager.state.enabled ? await encryption.manager.roomKey(channel.id) : undefined;
+      const result = await api<{ token: string; url: string }>(`/channels/${channel.id}/voice-token`, 'POST', e2ee ? { roster: e2ee.roster } : undefined);
+      setCall({ channel, ...result, e2ee });
+    }
     catch (e) { notify(errorText(e)); } finally { setJoining(false); }
   }
   const current = channels.find(c => c.id === selected) || channels[0];
@@ -109,7 +123,7 @@ export function App() {
   if (booting) return <div className="loading-page"><Logo /><span>Загрузка…</span></div>;
   if (bootError) return <div className="loading-page"><Logo /><p>{bootError}</p><button className="primary" onClick={() => void boot()}>Попробовать снова</button></div>;
   if (!user) return <><DesktopUpdate /><AppUpdate inCall={false} /><Auth onLogin={setUser} />{toastView}</>;
-  return <AvatarProvider key={user.id}><div className="app-shell">
+  return <EncryptionContext.Provider value={encryption}><AvatarProvider key={user.id}><div className="app-shell">
     {mobileNav && <button className="nav-scrim" aria-label="Закрыть меню" onClick={() => setMobileNav(false)} />}
     <aside className={`sidebar ${mobileNav ? 'mobile-open' : ''}`}><div className="sidebar-brand"><Logo /><div className="brand-badges"><span className="version">BETA</span><span className="product-version" title="Версия приложения">v{__KRUG_VERSION__}</span></div></div>
       <div className="server-label"><div className="server-icon"><AudioLines size={23} /></div><div><strong>Наш круг</strong><span>Частный сервер</span></div><ChevronDown size={16} /></div>
@@ -129,7 +143,7 @@ export function App() {
       <div className="profile"><Avatar name={user.displayName} userId={user.id} /><div className="profile-name"><strong>{user.displayName}</strong><span><i className={connected ? 'online-dot' : 'offline-dot'} />{connected ? 'На связи' : 'Переподключение…'}</span></div><button className="icon-button" title="Настройки" aria-label="Настройки" onClick={() => setModal('settings')}><Settings2 size={18} /></button><button className="icon-button" title="Выйти из аккаунта" aria-label="Выйти из аккаунта" onClick={() => void logout()}><LogOut size={17} /></button></div>
     </aside>
     <main className="main-app">
-      <header className="topbar"><button className="mobile-menu icon-button" aria-label="Открыть меню" onClick={() => setMobileNav(true)}><Menu size={22} /></button><span className="header-channel-icon">{studioOpen ? <Radio size={22} /> : current?.kind === 'voice' ? <Volume2 size={22} /> : <Hash size={22} />}</span><h1>{studioOpen ? 'Трансляция' : current?.name || 'Ваши каналы'}</h1><span className="header-divider" /><p>{studioOpen ? 'Окно игры и отдельный звук приложения' : current?.description}</p><div className="header-actions">{!studioOpen && user.role === 'admin' && current && <button className="icon-button" title="Настройки канала" aria-label="Настройки канала" onClick={() => setModal('settings')}><Settings2 size={19} /></button>}<span className="private-badge"><LockKeyhole size={13} />{studioOpen ? 'Доступ по ссылке' : 'По приглашению'}</span>{!studioOpen && current?.kind === 'voice' && <button className={`icon-button ${showChat ? 'active' : ''}`} title="Чат комнаты" aria-label="Показать или скрыть чат" aria-pressed={showChat} onClick={() => setShowChat(!showChat)}><MessageSquare size={19} /></button>}</div></header>
+      <header className="topbar"><button className="mobile-menu icon-button" aria-label="Открыть меню" onClick={() => setMobileNav(true)}><Menu size={22} /></button><span className="header-channel-icon">{studioOpen ? <Radio size={22} /> : current?.kind === 'voice' ? <Volume2 size={22} /> : <Hash size={22} />}</span><h1>{studioOpen ? 'Трансляция' : current?.name || 'Ваши каналы'}</h1><span className="header-divider" /><p>{studioOpen ? 'Окно игры и отдельный звук приложения' : current?.description}</p><div className="header-actions">{!studioOpen && user.role === 'admin' && current && <button className="icon-button" title="Настройки канала" aria-label="Настройки канала" onClick={() => setModal('settings')}><Settings2 size={19} /></button>}<span className="private-badge"><LockKeyhole size={13} />{studioOpen ? 'Доступ по ссылке' : encryption.manager?.state.enabled ? 'Сквозное шифрование' : 'Шифрование не включено'}</span>{!studioOpen && current?.kind === 'voice' && <button className={`icon-button ${showChat ? 'active' : ''}`} title="Чат комнаты" aria-label="Показать или скрыть чат" aria-pressed={showChat} onClick={() => setShowChat(!showChat)}><MessageSquare size={19} /></button>}</div></header>
       <DesktopUpdate /><AppUpdate inCall={Boolean(call) || broadcastActive} />
       {streamOrigin && <div className="broadcast-studio-wrap" style={{ display: studioOpen ? undefined : 'none' }}><BroadcastStudio origin={streamOrigin} onActive={setBroadcastActive} notify={notify} /></div>}
       {!connected && <div className="reconnect-banner">Восстанавливаем связь с чатом. Новые сообщения появятся после подключения.</div>}
@@ -147,5 +161,5 @@ export function App() {
     {modal === 'channel' && <CreateChannel onClose={() => setModal(null)} notify={notify} onCreated={channel => { setChannels(old => [...old.filter(c => c.id !== channel.id), channel]); setSelected(channel.id); }} />}
     {modal === 'settings' && <Settings key={current?.id || 'account'} user={user} channel={current} onClose={() => setModal(null)} notify={notify} onLogout={signedOut} onDeleted={remaining => { setChannels(remaining); setSelected(remaining[0]?.id || ''); setModal(null); }} />}
     {toastView}
-  </div></AvatarProvider>;
+  </div></AvatarProvider></EncryptionContext.Provider>;
 }

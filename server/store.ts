@@ -4,10 +4,11 @@ import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { digest } from './security.ts';
 import type { Config } from './config.ts';
+import type { EncryptedEnvelope } from '../src/crypto-types.ts';
 
 export type User = { id: string; username: string; displayName: string; role: 'admin' | 'member' };
 export type Channel = { id: string; name: string; kind: 'text' | 'voice'; description: string };
-export type Message = { id: number; channelId: string; body: string; createdAt: number; user: User; image: boolean };
+export type Message = { id: number; channelId: string; body: string; createdAt: number; user: User; image: boolean; encrypted?: EncryptedEnvelope };
 export const DAY = 86400_000;
 
 export function openStore(config: Config) {
@@ -82,8 +83,8 @@ export function openStore(config: Config) {
   const channel = (id: string) => db.prepare('SELECT * FROM channels WHERE id = ?').get(id) as Channel | undefined;
   const channels = () => db.prepare('SELECT * FROM channels ORDER BY rowid').all() as Channel[];
   const message = (id: number) => {
-    const row = db.prepare('SELECT m.*, EXISTS(SELECT 1 FROM message_images i WHERE i.messageId = m.id) AS image FROM messages m WHERE m.id = ?').get(id) as { id: number; channelId: string; userId: string; body: string; createdAt: number; image: number } | undefined;
-    return row ? { id: row.id, channelId: row.channelId, body: row.body, createdAt: row.createdAt, user: publicUser(row.userId)!, image: Boolean(row.image) } : undefined;
+    const row = db.prepare('SELECT m.*, EXISTS(SELECT 1 FROM message_images i WHERE i.messageId = m.id) AS image FROM messages m WHERE m.id = ?').get(id) as { id: number; channelId: string; userId: string; body: string; createdAt: number; image: number; encrypted?: string } | undefined;
+    return row ? { id: row.id, channelId: row.channelId, body: row.body, createdAt: row.createdAt, user: publicUser(row.userId)!, image: Boolean(row.image), ...(row.encrypted ? { encrypted: JSON.parse(row.encrypted) as EncryptedEnvelope } : {}) } : undefined;
   };
   const unread = (userId: string) => {
     const rows = db.prepare(`SELECT c.id,

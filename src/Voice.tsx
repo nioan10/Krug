@@ -1,7 +1,10 @@
 import { participantUserId } from './participant-user';
+import E2EEWorker from 'livekit-client/e2ee-worker?worker';
+import { useEncryption } from './EncryptionSettings';
+import { subscribe } from './events';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { LiveKitRoom, TrackToggle, useParticipants, useTracks, VideoTrack, useIsSpeaking, useIsMuted, useConnectionState, StartAudio, type TrackReference } from '@livekit/components-react';
-import { Room, Track, ConnectionState, ParticipantEvent, LocalAudioTrack, type Participant, type RoomOptions } from 'livekit-client';
+import { Room, RoomEvent, ExternalE2EEKeyProvider, isE2EESupported, Track, ConnectionState, ParticipantEvent, LocalAudioTrack, type Participant, type RoomOptions } from 'livekit-client';
 import { Coffee, Headphones, HeadphoneOff, Mic, MicOff, MonitorUp, PhoneOff, Settings2, Video, Maximize2, Radio, Volume2 } from 'lucide-react';
 import { Avatar, Modal } from './ui';
 import { IncomingAudio, MicrophoneToggle, VolumeSlider } from './AudioControls';
@@ -12,7 +15,7 @@ import { api, type Channel, type VoiceOccupant } from './api';
 import { DesktopShare } from './DesktopShare';
 import { hasVisibleCamera } from './camera-state';
 
-export type Call = { channel: Channel; token: string; url: string };
+export type Call = { channel: Channel; token: string; url: string; e2ee?: { key: ArrayBuffer; roster: string } };
 const options: RoomOptions = {
   adaptiveStream: true, dynacast: true,
   audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -113,7 +116,7 @@ function CallContent({ room, onLeave, notify, channelId, presence }: { room: Roo
   return <div className="call-content">
     <RestoreAudioOutput notify={notify} />
     <IncomingAudio levels={levels} muted={deafened} />
-    <div className="call-overline"><span className={`connection-label ${state === ConnectionState.Connected ? 'good' : ''}`}><span className="live-dot" />{state === ConnectionState.Connected ? 'Подключено' : state === ConnectionState.Reconnecting || state === ConnectionState.SignalReconnecting ? 'Восстанавливаем связь…' : 'Подключаемся…'}{state === ConnectionState.Connected && <span className="call-ping" title="Задержка до голосового сервера">{ping === null ? 'Пинг —' : `${ping} мс`}</span>}</span><span>{participants.length} в комнате</span></div>
+    <div className="call-overline"><span className={`connection-label ${state === ConnectionState.Connected ? 'good' : ''}`}><span className="live-dot" />{state === ConnectionState.Connected ? 'Подключено' : state === ConnectionState.Reconnecting || state === ConnectionState.SignalReconnecting ? 'Восстанавливаем связь…' : 'Подключаемся…'}{state === ConnectionState.Connected && <span className="call-ping" title="Задержка до голосового сервера">{ping === null ? 'Пинг —' : `${ping} мс`}</span>}</span><span>{room.options.encryption ? '🔒 Сквозное шифрование · ' : ''}{participants.length} в комнате</span></div>
     <div className="call-stage">
       {screens.map(track => <div className="screen-tile" key={track.publication.trackSid}><VideoTrack trackRef={track} /><div className="screen-caption"><MonitorUp size={15} /><span>Экран · {track.participant.name}</span><button className="icon-button" aria-label="На весь экран" onClick={e => void e.currentTarget.closest('.screen-tile')?.requestFullscreen().catch(() => notify('Полноэкранный режим недоступен.'))}><Maximize2 size={16} /></button></div></div>)}
       <div className={`people-grid ${screens.length ? 'with-screen' : ''}`}>{participants.map(p => {
@@ -137,17 +140,53 @@ function CallContent({ room, onLeave, notify, channelId, presence }: { room: Roo
   </div>;
 }
 export function Voice({ call, presence, onLeave, notify }: { call: Call; presence: VoiceOccupant[]; onLeave: () => void; notify: (s: string) => void }) {
+  const { manager } = useEncryption();
   const [room, setRoom] = useState<Room>();
   const active = useRef(false);
   useEffect(() => {
+    let disposed = false;
     active.current = true;
-    // Web Audio supports amplification; HTMLMediaElement.volume is capped at 1.
     const audioContext = new AudioContext({ latencyHint: 'interactive' });
-    const nextRoom = new Room({ ...options, webAudioMix: { audioContext } });
-    setRoom(nextRoom);
+    let nextRoom: Room | undefined; let worker: Worker | undefined;
+    async function prepare() {
+      let encryption;
+      if (call.e2ee) {
+        if (!isE2EESupported()) throw Error('Этот браузер не поддерживает сквозное шифрование звонков. Обновите приложение или браузер.');
+        worker = new E2EEWorker();
+        const keyProvider = new ExternalE2EEKeyProvider();
+        await keyProvider.setKey(call.e2ee.key);
+        encryption = { keyProvider, worker };
+      }
+      if (disposed) { worker?.terminate(); return; }
+      nextRoom = new Room({ ...options, encryption, webAudioMix: { audioContext } });
+      if (call.e2ee) {
+        await nextRoom.setE2EEEnabled(true);
+        nextRoom.on(RoomEvent.EncryptionError, () => { if (!disposed) { notify('Ошибка шифрования. Звонок остановлен.'); onLeave(); } });
+        nextRoom.on(RoomEvent.TrackSubscribed, (_track, publication) => {
+          if (!publication.isEncrypted && !disposed) { publication.setSubscribed(false); notify('Получен незашифрованный поток. Звонок остановлен.'); onLeave(); }
+        });
+      }
+      if (!disposed) setRoom(nextRoom);
+    }
+    void prepare().catch(error => { if (!disposed) { notify(error instanceof Error ? error.message : 'Не удалось включить шифрование звонка.'); onLeave(); } });
+    let checking = false;
+    async function checkAccess() {
+      if (checking || disposed || !manager) return;
+      checking = true;
+      const deadline = setTimeout(() => { if (!disposed) { notify('Не удалось проверить доступ к звонку. Подключитесь снова.'); onLeave(); } }, 5000);
+      try {
+        const state = await manager.refresh();
+        if (state.enabled !== Boolean(call.e2ee) || (call.e2ee && state.roster !== call.e2ee.roster)) {
+          if (!disposed) { notify('Состав устройств изменился. Подключитесь к звонку с новым ключом.'); onLeave(); }
+        }
+      } catch { if (!disposed) { notify('Не удалось подтвердить доступ. Звонок остановлен.'); onLeave(); } }
+      finally { clearTimeout(deadline); checking = false; }
+    }
+    const off = subscribe(event => { if (event.type === 'encryption-changed' || event.type === 'ready') void checkAccess(); });
+    const timer = setInterval(() => void checkAccess(), 3000);
     return () => {
-      active.current = false;
-      void nextRoom.disconnect().finally(() => audioContext.close()).catch(() => {});
+      disposed = true; active.current = false; clearInterval(timer); off();
+      void (nextRoom?.disconnect() ?? Promise.resolve()).finally(() => { worker?.terminate(); return audioContext.close(); }).catch(() => {});
     };
   }, []);
   const onDisconnected = useCallback(() => { if (active.current) onLeave(); }, [onLeave]);

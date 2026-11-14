@@ -1,6 +1,8 @@
 import type { AvatarStyle, Channel, Message, User, VoicePresence } from './api';
 export type ServerEvent =
   | { type: 'ready' }
+  | { type: 'history-keys'; messageId: number }
+  | { type: 'encryption-changed'; enabled: boolean; roster: string }
   | { type: 'unread'; channels: Record<string, boolean> }
   | { type: 'presence'; users: User[] }
   | { type: 'members-updated' }

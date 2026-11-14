@@ -1,3 +1,6 @@
+import { useEncryption } from './EncryptionSettings';
+import { EncryptedImage } from './EncryptedImage';
+import { base64ToBytes, type SecretPayload } from './e2ee-crypto';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArrowDown, ArrowUp, Hash, ImagePlus, MessageCircle, Smile, Trash2, X } from 'lucide-react';
 import { api, errorText, type Channel, type Message, type User } from './api';
@@ -20,6 +23,17 @@ function applyEvent(messages: Message[], event: ServerEvent, id: string): Messag
 }
 export function Chat({ channel, user, compact = false, notify }: { channel: Channel; user: User; compact?: boolean; notify: (s: string) => void }) {
   const [messages, setMessages] = useState<Message[]>([]);
+  const { manager, error: encryptionError, revision } = useEncryption();
+  const [decoded, setDecoded] = useState<Record<number, { payload?: SecretPayload; error?: string }>>({});
+  useEffect(() => {
+    let stopped = false;
+    if (!manager) return;
+    void Promise.all(messages.filter(m => m.encrypted).map(async message => {
+      try { return [message.id, { payload: await manager.decryptMessage(message) }] as const; }
+      catch (e) { return [message.id, { error: errorText(e) }] as const; }
+    })).then(values => { if (!stopped) setDecoded(Object.fromEntries(values)); });
+    return () => { stopped = true; };
+  }, [messages, manager, revision]);
   const [hasMore, setHasMore] = useState(false);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -153,7 +167,10 @@ export function Chat({ channel, user, compact = false, notify }: { channel: Chan
     setBusy(true);
     try {
       const image = imageFile ? await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onerror = () => reject(new Error('Не удалось прочитать изображение.')); reader.onload = () => resolve(String(reader.result).split(',')[1]); reader.readAsDataURL(imageFile); }) : undefined;
-      const result = await api<{ message: Message }>(`/channels/${channel.id}/messages`, 'POST', { body, image });
+      if (!manager || encryptionError) throw Error(encryptionError || 'Подготавливаем ключи. Повторите отправку через несколько секунд.');
+      await manager.refresh();
+      const data = manager.state.enabled ? await manager.encryptMessage(channel.id, body, image && imageFile ? { bytes: base64ToBytes(image), mime: imageFile.type } : undefined) : { body, image };
+      const result = await api<{ message: Message }>(`/channels/${channel.id}/messages`, 'POST', data);
       stick.current = true;
       setMessages(old => applyEvent(old, { type: 'message', message: result.message }, channel.id));
       setDraft('');
@@ -173,11 +190,13 @@ export function Chat({ channel, user, compact = false, notify }: { channel: Chan
       {error && <div className="form-error" role="alert">{error} <button className="text-button" onClick={() => void refresh()}>Повторить</button></div>}
       {loading && messages.length === 0 && <p className="muted loading-line">Загружаем сообщения…</p>}
       {messages.map((message, i) => {
+        const plain = decoded[message.id]?.payload;
+        const body = message.encrypted ? plain ? plain.body : (decoded[message.id]?.error ? 'Не удалось расшифровать. Проверьте ключи или восстановите резервную копию.' : 'Расшифровываем…') : message.body;
         const day = new Date(message.createdAt).toLocaleDateString('ru', { day: 'numeric', month: 'long' });
         const previous = messages[i - 1];
         const sameDay = previous && new Date(previous.createdAt).toDateString() === new Date(message.createdAt).toDateString();
         return <div key={message.id}>{!sameDay && <div className="day-divider"><span>{day}</span></div>}<article className="message">
-          <Avatar name={message.user.displayName} userId={message.user.id} /><div className="message-main"><div className="message-meta"><strong>{message.user.displayName}</strong>{message.user.role === 'admin' && <span className="owner-tag">владелец</span>}<time dateTime={new Date(message.createdAt).toISOString()}>{new Date(message.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</time></div>{message.body && <p className={isEmojiOnly(message.body) ? 'emoji-only' : undefined}>{renderMessage(message.body)}</p>}{message.image && <button className="chat-image" type="button" onClick={() => setOpenedImage(message.id)} aria-label="Открыть изображение"><img loading="lazy" src={`/api/messages/${message.id}/image`} alt="Изображение в сообщении" /></button>}</div>
+          <Avatar name={message.user.displayName} userId={message.user.id} /><div className="message-main"><div className="message-meta"><strong>{message.user.displayName}</strong>{message.user.role === 'admin' && <span className="owner-tag">владелец</span>}<time dateTime={new Date(message.createdAt).toISOString()}>{new Date(message.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</time>{message.encrypted ? <small title="Сквозное шифрование">🔒</small> : manager?.state.enabled && <small className="tiny">старая открытая запись</small>}</div>{body && <p className={isEmojiOnly(body) ? 'emoji-only' : undefined}>{renderMessage(body)}</p>}{message.image && <button className="chat-image" type="button" onClick={() => setOpenedImage(message.id)} aria-label="Открыть изображение"><EncryptedImage message={message} payload={plain} /></button>}</div>
           {(user.id === message.user.id || user.role === 'admin') && <button className="delete-message icon-button" title="Удалить сообщение" aria-label="Удалить сообщение" onClick={() => void remove(message.id)}><Trash2 size={14} /></button>}
         </article></div>;
       })}
@@ -185,7 +204,7 @@ export function Chat({ channel, user, compact = false, notify }: { channel: Chan
     {newBelow && <button className="new-messages" onClick={() => { stick.current = true; scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: 'smooth' }); setNewBelow(false); }}>Новые сообщения <ArrowDown size={14} /></button>}
     {imagePreview && <div className="attachment-preview"><img src={imagePreview} alt="Прикреплённое изображение" /><span>{imageFile?.name}<small>Изображение готово к отправке</small></span><button type="button" className="icon-button" aria-label="Убрать изображение" onClick={() => setImageFile(null)}><X size={16} /></button></div>}
     <form className="composer" onSubmit={send}>{suggestions.length > 0 && <div className="mention-menu" role="listbox" aria-label="Упомянуть участника">{suggestions.map((person, index) => <button type="button" role="option" aria-selected={index === mentionIndex % suggestions.length} key={person.id} onMouseDown={e => e.preventDefault()} onClick={() => chooseMention(person)}><Avatar name={person.displayName} userId={person.id} /><span><strong>{person.displayName}</strong><small>@{person.username}</small></span></button>)}</div>}<textarea ref={input} onPaste={event => { const file = [...event.clipboardData.files].find(item => item.type.startsWith('image/')); if (file) { event.preventDefault(); attachImage(file); } }} aria-label={`Сообщение в ${channel.name}`} value={draft} onChange={e => { setDraft(e.target.value); setCaret(e.target.selectionStart); setMentionClosed(false); setMentionIndex(0); }} onSelect={e => setCaret(e.currentTarget.selectionStart)} placeholder={compact ? 'Написать в комнату…' : `Сообщение в #${channel.name}`} maxLength={4000} rows={1} onKeyDown={e => { if (suggestions.length && !(e.key === 'Enter' && e.shiftKey) && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(e.key) && !e.nativeEvent.isComposing) { e.preventDefault(); if (e.key === 'Escape') setMentionClosed(true); else if (e.key === 'ArrowDown') setMentionIndex(i => (i + 1) % suggestions.length); else if (e.key === 'ArrowUp') setMentionIndex(i => (i + suggestions.length - 1) % suggestions.length); else chooseMention(suggestions[mentionIndex % suggestions.length]); return; } if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(e); } }} /><input ref={fileInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden onChange={event => { attachImage(event.target.files?.[0]); event.target.value = ''; }} /><button type="button" className="attach-button" aria-label="Прикрепить изображение" title="Прикрепить изображение" disabled={busy} onClick={() => fileInput.current?.click()}><ImagePlus size={19} /></button><div className="emoji-wrap" ref={emojiContainer}><button type="button" className={`emoji-toggle ${emojiOpen ? 'active' : ''}`} aria-label="Смайлики" title="Смайлики" aria-expanded={emojiOpen} onClick={() => { setEmojiOpen(open => !open); setMentionClosed(true); }}><Smile size={19} /></button>{emojiOpen && <div className="emoji-panel" role="dialog" aria-label="Выбор смайлика"><div className="emoji-title">Смайлики <span>Выберите настроение</span></div><div className="emoji-tabs" role="tablist" aria-label="Категории смайликов">{emojiGroups.map((group, index) => <button type="button" role="tab" aria-selected={index === emojiGroup} key={group.name} onClick={() => setEmojiGroup(index)}>{group.name}</button>)}</div><div className="emoji-grid">{emojiGroups[emojiGroup].items.map(emoji => <button type="button" key={emoji} title={emoji} aria-label={`Добавить ${emoji}`} onClick={() => insertEmoji(emoji)}>{emoji}</button>)}</div></div>}</div><button type="submit" disabled={busy || (!draft.trim() && !imageFile)} aria-label="Отправить сообщение"><ArrowUp size={20} /></button></form>
-    {openedImage !== null && <Modal title="Изображение" onClose={() => setOpenedImage(null)}><div className="image-viewer"><img src={`/api/messages/${openedImage}/image`} alt="Изображение из чата" /></div></Modal>}
+    {openedImage !== null && <Modal title="Изображение" onClose={() => setOpenedImage(null)}><div className="image-viewer">{messages.find(m => m.id === openedImage) && <EncryptedImage message={messages.find(m => m.id === openedImage)!} payload={decoded[openedImage]?.payload} />}</div></Modal>}
     {externalUrl && <Modal title="Переход на сторонний сайт" onClose={() => setExternalUrl(null)}><div className="external-link-warning"><p>Вы переходите на сторонний сайт:</p><strong>{new URL(externalUrl).hostname}</strong><span>{externalUrl}</span><div><button className="secondary" onClick={() => setExternalUrl(null)}>Отмена</button><button className="primary" onClick={() => { window.open(externalUrl, '_blank', 'noopener,noreferrer'); setExternalUrl(null); }}>Перейти</button></div></div></Modal>}
     <div className="composer-hint">{draft.length > 3500 ? `${draft.length} / 4000` : 'Enter — отправить · Shift + Enter — новая строка'}</div>
   </section>;
