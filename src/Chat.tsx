@@ -4,6 +4,7 @@ import { api, errorText, type Channel, type Message, type User } from './api';
 import { subscribe, type ServerEvent } from './events';
 import { Avatar, Modal } from './ui';
 import { isTrustedService, splitLinks } from './chat-links';
+import { isEmojiOnly } from './emoji-only';
 
 const emojiGroups = [
   { name: 'Эмоции', items: '😀 😃 😄 😁 😆 😅 😂 🤣 😊 🙂 🙃 😉 😍 🥰 😘 😎 🤔 🫡 🤗 🤩 😏 😴 😭 🥲 😢 😤 😡 🥳 😇 🤯 😳 🫠'.split(' ') },
@@ -176,7 +177,7 @@ export function Chat({ channel, user, compact = false, notify }: { channel: Chan
         const previous = messages[i - 1];
         const sameDay = previous && new Date(previous.createdAt).toDateString() === new Date(message.createdAt).toDateString();
         return <div key={message.id}>{!sameDay && <div className="day-divider"><span>{day}</span></div>}<article className="message">
-          <Avatar name={message.user.displayName} /><div className="message-main"><div className="message-meta"><strong>{message.user.displayName}</strong>{message.user.role === 'admin' && <span className="owner-tag">владелец</span>}<time dateTime={new Date(message.createdAt).toISOString()}>{new Date(message.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</time></div>{message.body && <p>{renderMessage(message.body)}</p>}{message.image && <button className="chat-image" type="button" onClick={() => setOpenedImage(message.id)} aria-label="Открыть изображение"><img loading="lazy" src={`/api/messages/${message.id}/image`} alt="Изображение в сообщении" /></button>}</div>
+          <Avatar name={message.user.displayName} /><div className="message-main"><div className="message-meta"><strong>{message.user.displayName}</strong>{message.user.role === 'admin' && <span className="owner-tag">владелец</span>}<time dateTime={new Date(message.createdAt).toISOString()}>{new Date(message.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</time></div>{message.body && <p className={isEmojiOnly(message.body) ? 'emoji-only' : undefined}>{renderMessage(message.body)}</p>}{message.image && <button className="chat-image" type="button" onClick={() => setOpenedImage(message.id)} aria-label="Открыть изображение"><img loading="lazy" src={`/api/messages/${message.id}/image`} alt="Изображение в сообщении" /></button>}</div>
           {(user.id === message.user.id || user.role === 'admin') && <button className="delete-message icon-button" title="Удалить сообщение" aria-label="Удалить сообщение" onClick={() => void remove(message.id)}><Trash2 size={14} /></button>}
         </article></div>;
       })}
