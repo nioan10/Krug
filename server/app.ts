@@ -15,6 +15,7 @@ import type { Config } from './config.ts';
 import { openStore, DAY, type User } from './store.ts';
 import { ApiError, digest, hashPassword, newSecret, verifyPassword } from './security.ts';
 import { createMediaService, type MediaService } from './media.ts';
+import { createSessionTransfers } from './session-transfer.ts';
 
 declare module 'fastify' { interface FastifyRequest { user: User | null; sessionHash: string | null } }
 const credentials = z.object({ username: z.string().trim().toLowerCase().regex(/^[a-z0-9_]{3,24}$/), password: z.string().min(12).max(128) });
@@ -30,7 +31,8 @@ export async function buildApp(config: Config, media: MediaService = createMedia
   const { db } = store;
   const sockets = new Map<WebSocket, { user: User; hash: string; alive: boolean }>();
   const attempts = new Map<string, { count: number; expires: number }>();
-  const updateTokens = new Map<string, number>();
+  const updateTokens = new Map<string, { expires: number; migrationAware: boolean }>();
+  const sessionTransfers = createSessionTransfers();
   const deletingChannels = new Set<string>();
   const dummy = await hashPassword(newSecret());
   const sessionCookie = config.NODE_ENV === 'production' ? '__Host-krug' : 'krug_session';
@@ -169,6 +171,21 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     reply.clearCookie(sessionCookie, { path: '/', secure: cookieOptions.secure, sameSite: 'strict' });
     return { ok: true };
   });
+  app.post('/api/desktop-migration/issue', { preHandler: auth, config: authRate }, async req => {
+    try { return { token: sessionTransfers.issue(req.sessionHash!) }; }
+    catch { throw new ApiError(429, 'Повторите попытку позже.'); }
+  });
+  app.post('/api/desktop-migration/redeem', { config: authRate }, async (req, reply) => {
+    const { token } = z.object({ token: z.string().length(43) }).parse(req.body);
+    const source = sessionTransfers.consume(token);
+    const user = source ? store.sessionUser(source) : undefined;
+    const session = source ? db.prepare('SELECT expiresAt FROM sessions WHERE hash = ? AND expiresAt > ?').get(source, Date.now()) as { expiresAt: number } | undefined : undefined;
+    if (!user || !session) throw new ApiError(401, 'Перенос сессии недоступен.');
+    const newToken = newSecret();
+    db.prepare('INSERT INTO sessions VALUES (?, ?, ?)').run(digest(newToken), user.id, session.expiresAt);
+    reply.setCookie(sessionCookie, newToken, { ...cookieOptions, maxAge: Math.max(0, Math.floor((session.expiresAt - Date.now()) / 1000)) });
+    return { user };
+  });
   app.post('/api/auth/password', { preHandler: auth, config: authRate }, async (req, reply) => {
     const input = z.object({ currentPassword: z.string().max(128), password: z.string().min(12).max(128) }).parse(req.body);
     const row = db.prepare('SELECT password FROM users WHERE id = ?').get(req.user!.id) as { password: string };
@@ -193,20 +210,33 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     reply.header('Content-Length', info.size).header('Content-Disposition', 'attachment; filename="Okrug-Setup.exe"').type('application/octet-stream');
     return reply.send(createReadStream(path));
   });
-  app.get('/api/desktop-updates/access', { preHandler: auth }, async () => {
+  app.get('/api/desktop-updates/access', { preHandler: auth }, async req => {
     const now = Date.now();
-    for (const [token, expires] of updateTokens) if (expires <= now) updateTokens.delete(token);
+    for (const [token, state] of updateTokens) if (state.expires <= now) updateTokens.delete(token);
     if (updateTokens.size >= 1000) throw new ApiError(429, 'Повторите попытку позже.');
-    const token = newSecret(); updateTokens.set(digest(token), now + 10 * 60 * 1000);
+    const token = newSecret(); updateTokens.set(digest(token), { expires: now + 10 * 60 * 1000, migrationAware: req.headers['x-krug-desktop-capability'] === 'migration-v1' });
     return { token };
   });
   app.get('/api/desktop-updates/:file', async (req, reply) => {
     const header = req.headers.authorization || '';
     const token = header.startsWith('Bearer ') ? header.slice(7) : '';
-    if (!token || (updateTokens.get(digest(token)) || 0) <= Date.now()) throw new ApiError(401, 'Обновление недоступно.');
+    const access = token ? updateTokens.get(digest(token)) : undefined;
+    if (!access || access.expires <= Date.now()) throw new ApiError(401, 'Обновление недоступно.');
     const { file } = z.object({ file: z.string() }).parse(req.params);
     if (file !== 'latest.yml' && !/^Krug-Setup-\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\.exe$/.test(file)) throw new ApiError(404, 'Обновление не найдено.');
-    const path = resolve(config.DESKTOP_UPDATE_DIR, file);
+    let selected = file;
+    if (file === 'latest.yml' && !access.migrationAware) {
+      // Old Electron clients must first receive a migration-aware Electron
+      // release, including clients that have been offline for a long time.
+      if (existsSync(resolve(config.DESKTOP_UPDATE_DIR, 'legacy.yml'))) selected = 'legacy.yml';
+      else {
+        let latest: string;
+        try { latest = await readFile(resolve(config.DESKTOP_UPDATE_DIR, 'latest.yml'), 'utf8'); }
+        catch { throw new ApiError(404, 'Обновление не найдено.'); }
+        if (/^krugRuntime:\s*webview2\s*$/m.test(latest)) selected = 'legacy.yml';
+      }
+    }
+    const path = resolve(config.DESKTOP_UPDATE_DIR, selected);
     let info; try { info = await stat(path); } catch { throw new ApiError(404, 'Обновление не найдено.'); }
     if (!info.isFile()) throw new ApiError(404, 'Обновление не найдено.');
     reply.header('Content-Length', info.size).type(file.endsWith('.yml') ? 'text/yaml; charset=utf-8' : 'application/octet-stream');

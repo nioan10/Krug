@@ -54,6 +54,37 @@ test('desktop update files require a short-lived update-only token and a safe fi
   assert.equal((await app.inject({ url: '/api/channels', headers: authorization })).statusCode, 401);
   writeFileSync(join(dir, 'latest.yml'), 'path: ../../secret.exe\n');
   assert.equal((await app.inject({ url: '/api/desktop-installer', headers: headers(admin) })).statusCode, 503);
+  const webviewManifest = 'version: 0.3.0\npath: Krug-Setup-0.3.0.exe\nkrugRuntime: webview2\n';
+  writeFileSync(join(dir, 'latest.yml'), webviewManifest);
+  assert.equal((await app.inject({ url: '/api/desktop-updates/latest.yml', headers: authorization })).statusCode, 404);
+  const legacyManifest = 'version: 0.2.0\npath: Krug-Setup-0.2.0.exe\n';
+  writeFileSync(join(dir, 'legacy.yml'), legacyManifest);
+  assert.equal((await app.inject({ url: '/api/desktop-updates/latest.yml', headers: authorization })).body, legacyManifest);
+  const capable = (await app.inject({ url: '/api/desktop-updates/access', headers: { ...headers(admin), 'x-krug-desktop-capability': 'migration-v1' } })).json().token as string;
+  assert.equal((await app.inject({ url: '/api/desktop-updates/latest.yml', headers: { authorization: `Bearer ${capable}` } })).body, webviewManifest);
+  writeFileSync(join(dir, 'latest.yml'), 'version: 0.3.0\npath: Krug-Setup-0.3.0.exe\n');
+  assert.equal((await app.inject({ url: '/api/desktop-updates/latest.yml', headers: authorization })).body, legacyManifest);
+});
+
+test('desktop session migration is same-origin, single-use and bound to a live session', async t => {
+  const app = await buildApp(config()); t.after(() => app.close());
+  assert.equal((await app.inject({ method: 'POST', url: '/api/desktop-migration/issue', headers: headers() })).statusCode, 401);
+  const original = await owner(app);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/desktop-migration/issue', headers: { cookie: original, origin: 'https://evil.example' } })).statusCode, 403);
+  const issued = await app.inject({ method: 'POST', url: '/api/desktop-migration/issue', headers: headers(original) });
+  assert.equal(issued.statusCode, 200);
+  const token = issued.json().token as string;
+  const payload = { token };
+  assert.equal((await app.inject({ method: 'POST', url: '/api/desktop-migration/redeem', headers: { origin: 'https://evil.example' }, payload })).statusCode, 403);
+  const results = await Promise.all([0, 1].map(() => app.inject({ method: 'POST', url: '/api/desktop-migration/redeem', headers: headers(), payload })));
+  assert.deepEqual(results.map(r => r.statusCode).sort(), [200, 401]);
+  const migrated = cookieOf(results.find(r => r.statusCode === 200)!);
+  assert.notEqual(migrated, original);
+  assert.equal((await app.inject({ url: '/api/me', headers: headers(migrated) })).json().user.username, 'owner');
+  const pending = (await app.inject({ method: 'POST', url: '/api/desktop-migration/issue', headers: headers(original) })).json().token;
+  await app.inject({ method: 'POST', url: '/api/auth/logout', headers: headers(original) });
+  assert.equal((await app.inject({ method: 'POST', url: '/api/desktop-migration/redeem', headers: headers(), payload: { token: pending } })).statusCode, 401);
+  assert.equal((await app.inject({ url: '/api/me', headers: headers(migrated) })).statusCode, 200);
 });
 
 test('passwords use unique salts and reject wrong passwords', async () => {
