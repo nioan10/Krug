@@ -49,7 +49,7 @@ jobs:
           target: google_apis
           arch: x86_64
           disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -dns-server 10.0.2.2
           script: bash android/test-emulator.sh
       - uses: actions/upload-artifact@v4
         if: always()
@@ -58,4 +58,5 @@ jobs:
           path: |
             android-artifact/emulator.png
             android-artifact/emulator.log
+            android-artifact/dns.log
           if-no-files-found: ignore
