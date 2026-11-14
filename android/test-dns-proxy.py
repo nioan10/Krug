@@ -24,4 +24,5 @@ class Server(socketserver.ThreadingUDPServer):
     daemon_threads = True
 
 with Server(('127.0.0.1', 53), Resolver) as server:
+    print('DNS relay ready', flush=True)
     server.serve_forever()
