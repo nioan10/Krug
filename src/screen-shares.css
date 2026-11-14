@@ -1,0 +1,7 @@
+.screen-caption .screen-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.screen-caption>svg{flex-shrink:0}.screen-tile .screen-caption button{margin-left:0;flex-shrink:0}
+.screen-audio{display:flex;align-items:center;gap:6px;padding:8px;border-radius:6px;white-space:nowrap;background:transparent;color:inherit}
+.screen-audio:hover{background:#30402a;color:var(--accent)}
+.screen-audio-panel p{font-size:11px;line-height:1.6;margin:12px 0 0;color:#a8b9a0}.screen-audio-panel>p:first-child{margin:0}
+.screen-audio-actions{display:flex;gap:8px;margin-top:12px}.screen-audio-actions button{background:#30402a;color:#cbe8bb;padding:8px 12px;border-radius:6px;font-size:11px;flex:1}
+.screen-audio:focus-visible,.screen-audio-actions button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}

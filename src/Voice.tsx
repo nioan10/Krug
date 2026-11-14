@@ -8,7 +8,7 @@ import { Room, RoomEvent, ExternalE2EEKeyProvider, isE2EESupported, Track, Conne
 import { Coffee, Headphones, HeadphoneOff, Mic, MicOff, MonitorUp, PhoneOff, Settings2, Video, Radio, Volume2 } from 'lucide-react';
 import { Avatar, Modal } from './ui';
 import { IncomingAudio, MicrophoneToggle, VolumeSlider } from './AudioControls';
-import { loadAudioLevels, saveAudioLevels } from './audio-levels';
+import { loadAudioLevels, saveAudioLevels, screenLevel } from './audio-levels';
 import { DeviceSettings } from './DeviceSettings';
 import { RestoreAudioOutput } from './AudioOutput';
 import { api, type Channel, type VoiceOccupant } from './api';
@@ -57,7 +57,7 @@ function ParticipantTile({ participant, camera, onVolume, deafened, afk }: { par
 }
 function CallContent({ room, onLeave, notify, channelId, presence }: { room: Room; onLeave: () => void; notify: (message: string) => void; channelId: string; presence: VoiceOccupant[] }) {
   const participants = useParticipants();
-  const tracks = useTracks([Track.Source.ScreenShare, Track.Source.Camera], { onlySubscribed: true });
+  const tracks = useTracks([Track.Source.ScreenShare, Track.Source.ScreenShareAudio, Track.Source.Camera], { onlySubscribed: true });
   const state = useConnectionState();
   const [ping, setPing] = useState<number | null>(null);
   useEffect(() => {
@@ -119,7 +119,11 @@ function CallContent({ room, onLeave, notify, channelId, presence }: { room: Roo
     <IncomingAudio levels={levels} muted={deafened} />
     <div className="call-overline"><span className={`connection-label ${state === ConnectionState.Connected ? 'good' : ''}`}><span className="live-dot" />{state === ConnectionState.Connected ? 'Подключено' : state === ConnectionState.Reconnecting || state === ConnectionState.SignalReconnecting ? 'Восстанавливаем связь…' : 'Подключаемся…'}{state === ConnectionState.Connected && <span className="call-ping" title="Задержка до голосового сервера">{ping === null ? 'Пинг —' : `${ping} мс`}</span>}</span><span>{room.options.encryption ? '🔒 Сквозное шифрование · ' : ''}{participants.length} в комнате</span></div>
     <div className="call-stage">
-      {screens.map(track => <ScreenShareTile key={track.publication.trackSid} track={track} notify={notify} />)}
+      {screens.map(track => <ScreenShareTile key={track.publication.trackSid} track={track} notify={notify} audio={{
+        available: tracks.some(t => t.source === Track.Source.ScreenShareAudio && t.participant.identity === track.participant.identity),
+        volume: screenLevel(levels, track.participant.identity, participantUserId(track.participant)), deafened,
+        onVolume: value => setLevels(old => ({ ...old, screens: { ...old.screens, [track.participant.identity]: value } })),
+      }} />)}
       <div className={`people-grid ${screens.length ? 'with-screen' : ''}`}>{participants.map(p => {
         const camera = cameras.find(t => t.participant.identity === p.identity);
         const audioState = p.isLocal ? deafened : presence.find(person => (person.identity ?? person.id) === p.identity)?.deafened ?? null;
@@ -137,7 +141,7 @@ function CallContent({ room, onLeave, notify, channelId, presence }: { room: Roo
       <button className="hangup" title="Выйти из звонка" aria-label="Выйти из звонка" onClick={onLeave}><PhoneOff size={21} /></button>
     </div><StartAudio label="Нажмите, чтобы включить звук" /></div>
     {devices && <DeviceSettings onClose={closeDevices} notify={notify}><label className="noise-setting"><span><strong>Шумоподавление</strong><small>Уменьшает фоновый шум микрофона средствами устройства</small></span><input type="checkbox" checked={noiseSuppression} disabled={changingNoise} onChange={event => void changeNoiseSuppression(event.target.checked)} /></label><VolumeSlider label="Входящий звук" value={levels.master} onChange={master => setLevels(old => ({ ...old, master }))} /><VolumeSlider label="Громкость микрофона" value={levels.microphone} max={2} onChange={microphone => setLevels(old => ({ ...old, microphone }))} /><p className="tiny">Уровень микрофона меняет то, как вас слышат другие. Выше 100% — усиление; если голос искажается, уменьшите уровень.</p></DeviceSettings>}
-    {volumeTarget && <Modal title="Громкость участника" onClose={closeVolume}><div className="form-stack"><VolumeSlider label={target?.name || 'Участник'} value={levels.participants[volumeTarget] ?? 1} onChange={value => setLevels(old => ({ ...old, participants: { ...old.participants, [volumeTarget]: value } }))} /><p className="muted">Меняет только то, как вы слышите этого участника, включая звук его демонстрации экрана.</p>{!target && <p className="tiny">Участник вышел из комнаты. Настройка сохранена.</p>}<button className="secondary" onClick={() => setLevels(old => ({ ...old, participants: { ...old.participants, [volumeTarget]: 1 } }))}>Сбросить до 100%</button></div></Modal>}
+    {volumeTarget && <Modal title="Громкость участника" onClose={closeVolume}><div className="form-stack"><VolumeSlider label={target?.name || 'Участник'} value={levels.participants[volumeTarget] ?? 1} onChange={value => setLevels(old => ({ ...old, participants: { ...old.participants, [volumeTarget]: value } }))} /><p className="muted">Меняет громкость голоса. Звук демонстрации настраивается отдельно, под её экраном.</p>{!target && <p className="tiny">Участник вышел из комнаты. Настройка сохранена.</p>}<button className="secondary" onClick={() => setLevels(old => ({ ...old, participants: { ...old.participants, [volumeTarget]: 1 } }))}>Сбросить до 100%</button></div></Modal>}
   </div>;
 }
 export function Voice({ call, presence, onLeave, notify }: { call: Call; presence: VoiceOccupant[]; onLeave: () => void; notify: (s: string) => void }) {
