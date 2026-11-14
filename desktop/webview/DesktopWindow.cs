@@ -106,7 +106,14 @@ internal sealed class DesktopWindow : Form
                 audio?.Stop();
                 updates.ResetCallState();
             };
-            core.NewWindowRequested += (_, request) => request.Handled = true;
+            core.NewWindowRequested += (_, request) =>
+            {
+                request.Handled = true;
+                if (!request.IsUserInitiated || !Uri.TryCreate(request.Uri, UriKind.Absolute, out var uri) ||
+                    (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp)) return;
+                try { Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true }); }
+                catch (Exception) { /* The system has no handler for this link. */ }
+            };
             core.NavigationCompleted += (_, navigation) => { if (navigation.IsSuccess) _ = CheckForUpdatesAsync(); };
             core.PermissionRequested += (_, request) =>
             {

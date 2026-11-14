@@ -11,7 +11,7 @@
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <DefineConstants>$(DefineConstants);KRUG_PRODUCTION</DefineConstants>
     <DefineConstants Condition="'$(KrugRelease)' == 'true'">$(DefineConstants);KRUG_RELEASE</DefineConstants>
-    <Version>0.2.1</Version>
+    <Version>0.2.2</Version>
     <ApplicationIcon>../../../public/icons/icon.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>

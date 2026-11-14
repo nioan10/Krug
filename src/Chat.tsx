@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArrowDown, ArrowUp, Hash, MessageCircle, Smile, Trash2 } from 'lucide-react';
 import { api, errorText, type Channel, type Message, type User } from './api';
 import { subscribe, type ServerEvent } from './events';
-import { Avatar } from './ui';
+import { Avatar, Modal } from './ui';
+import { isTrustedService, splitLinks } from './chat-links';
 
 const emojiGroups = [
   { name: 'Эмоции', items: '😀 😃 😄 😁 😆 😅 😂 🤣 😊 🙂 🙃 😉 😍 🥰 😘 😎 🤔 🫡 🤗 🤩 😏 😴 😭 🥲 😢 😤 😡 🥳 😇 🤯 😳 🫠'.split(' ') },
@@ -22,6 +23,14 @@ export function Chat({ channel, user, compact = false, notify }: { channel: Chan
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [draft, setDraft] = useState('');
+  const [externalUrl, setExternalUrl] = useState<string | null>(null);
+  function openLink(href: string) {
+    if (!isTrustedService(new URL(href), location.origin)) { setExternalUrl(href); return; }
+    window.open(href, '_blank', 'noopener,noreferrer');
+  }
+  function renderMessage(body: string) {
+    return splitLinks(body).map((part, index) => part.href ? <a key={index} href={part.href} target="_blank" rel="noopener noreferrer" onClick={event => { event.preventDefault(); openLink(part.href!); }} onAuxClick={event => { event.preventDefault(); openLink(part.href!); }}>{part.text}</a> : <span key={index}>{part.text.split(/((?:^|[^\p{L}\p{N}_@])@[a-z0-9_]{3,24}(?![a-z0-9_]))/giu).map((segment, i) => { const match = segment.match(/^([^@]*)@([a-z0-9_]+)$/i); return match && people.some(person => person.username === match[2].toLowerCase()) ? <span key={i}>{match[1]}<span className={`message-mention ${match[2].toLowerCase() === user.username ? 'own-mention' : ''}`}>@{match[2]}</span></span> : segment; })}</span>);
+  }
   const [people, setPeople] = useState<User[]>([]);
   const [caret, setCaret] = useState(0);
   const [mentionClosed, setMentionClosed] = useState(false);
@@ -150,13 +159,14 @@ export function Chat({ channel, user, compact = false, notify }: { channel: Chan
         const previous = messages[i - 1];
         const sameDay = previous && new Date(previous.createdAt).toDateString() === new Date(message.createdAt).toDateString();
         return <div key={message.id}>{!sameDay && <div className="day-divider"><span>{day}</span></div>}<article className="message">
-          <Avatar name={message.user.displayName} /><div className="message-main"><div className="message-meta"><strong>{message.user.displayName}</strong>{message.user.role === 'admin' && <span className="owner-tag">владелец</span>}<time dateTime={new Date(message.createdAt).toISOString()}>{new Date(message.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</time></div><p>{message.body.split(/((?:^|[^\p{L}\p{N}_@])@[a-z0-9_]{3,24}(?![a-z0-9_]))/giu).map((part, index) => { const match = part.match(/^([^@]*)@([a-z0-9_]+)$/i); return match && people.some(person => person.username === match[2].toLowerCase()) ? <span key={index}>{match[1]}<span className={`message-mention ${match[2].toLowerCase() === user.username ? 'own-mention' : ''}`}>@{match[2]}</span></span> : part; })}</p></div>
+          <Avatar name={message.user.displayName} /><div className="message-main"><div className="message-meta"><strong>{message.user.displayName}</strong>{message.user.role === 'admin' && <span className="owner-tag">владелец</span>}<time dateTime={new Date(message.createdAt).toISOString()}>{new Date(message.createdAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</time></div><p>{renderMessage(message.body)}</p></div>
           {(user.id === message.user.id || user.role === 'admin') && <button className="delete-message icon-button" title="Удалить сообщение" aria-label="Удалить сообщение" onClick={() => void remove(message.id)}><Trash2 size={14} /></button>}
         </article></div>;
       })}
     </div>
     {newBelow && <button className="new-messages" onClick={() => { stick.current = true; scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: 'smooth' }); setNewBelow(false); }}>Новые сообщения <ArrowDown size={14} /></button>}
     <form className="composer" onSubmit={send}>{suggestions.length > 0 && <div className="mention-menu" role="listbox" aria-label="Упомянуть участника">{suggestions.map((person, index) => <button type="button" role="option" aria-selected={index === mentionIndex % suggestions.length} key={person.id} onMouseDown={e => e.preventDefault()} onClick={() => chooseMention(person)}><Avatar name={person.displayName} /><span><strong>{person.displayName}</strong><small>@{person.username}</small></span></button>)}</div>}<textarea ref={input} aria-label={`Сообщение в ${channel.name}`} value={draft} onChange={e => { setDraft(e.target.value); setCaret(e.target.selectionStart); setMentionClosed(false); setMentionIndex(0); }} onSelect={e => setCaret(e.currentTarget.selectionStart)} placeholder={compact ? 'Написать в комнату…' : `Сообщение в #${channel.name}`} maxLength={4000} rows={1} onKeyDown={e => { if (suggestions.length && !(e.key === 'Enter' && e.shiftKey) && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(e.key) && !e.nativeEvent.isComposing) { e.preventDefault(); if (e.key === 'Escape') setMentionClosed(true); else if (e.key === 'ArrowDown') setMentionIndex(i => (i + 1) % suggestions.length); else if (e.key === 'ArrowUp') setMentionIndex(i => (i + suggestions.length - 1) % suggestions.length); else chooseMention(suggestions[mentionIndex % suggestions.length]); return; } if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(e); } }} /><div className="emoji-wrap" ref={emojiContainer}><button type="button" className={`emoji-toggle ${emojiOpen ? 'active' : ''}`} aria-label="Смайлики" title="Смайлики" aria-expanded={emojiOpen} onClick={() => { setEmojiOpen(open => !open); setMentionClosed(true); }}><Smile size={19} /></button>{emojiOpen && <div className="emoji-panel" role="dialog" aria-label="Выбор смайлика"><div className="emoji-title">Смайлики <span>Выберите настроение</span></div><div className="emoji-tabs" role="tablist" aria-label="Категории смайликов">{emojiGroups.map((group, index) => <button type="button" role="tab" aria-selected={index === emojiGroup} key={group.name} onClick={() => setEmojiGroup(index)}>{group.name}</button>)}</div><div className="emoji-grid">{emojiGroups[emojiGroup].items.map(emoji => <button type="button" key={emoji} title={emoji} aria-label={`Добавить ${emoji}`} onClick={() => insertEmoji(emoji)}>{emoji}</button>)}</div></div>}</div><button type="submit" disabled={busy || !draft.trim()} aria-label="Отправить сообщение"><ArrowUp size={20} /></button></form>
+    {externalUrl && <Modal title="Переход на сторонний сайт" onClose={() => setExternalUrl(null)}><div className="external-link-warning"><p>Вы переходите на сторонний сайт:</p><strong>{new URL(externalUrl).hostname}</strong><span>{externalUrl}</span><div><button className="secondary" onClick={() => setExternalUrl(null)}>Отмена</button><button className="primary" onClick={() => { window.open(externalUrl, '_blank', 'noopener,noreferrer'); setExternalUrl(null); }}>Перейти</button></div></div></Modal>}
     <div className="composer-hint">{draft.length > 3500 ? `${draft.length} / 4000` : 'Enter — отправить · Shift + Enter — новая строка'}</div>
   </section>;
 }
