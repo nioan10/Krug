@@ -9,6 +9,8 @@ import { Voice, type Call } from './Voice';
 import { Avatar, Logo } from './ui';
 import { CreateChannel, InviteModal, Settings } from './Settings';
 
+declare const __KRUG_VERSION__: string;
+
 export function App() {
   const [user, setUser] = useState<User | null>(null);
   const [booting, setBooting] = useState(true);
@@ -96,7 +98,7 @@ export function App() {
   if (!user) return <><DesktopUpdate /><AppUpdate inCall={false} /><Auth onLogin={setUser} />{toastView}</>;
   return <div className="app-shell">
     {mobileNav && <button className="nav-scrim" aria-label="Закрыть меню" onClick={() => setMobileNav(false)} />}
-    <aside className={`sidebar ${mobileNav ? 'mobile-open' : ''}`}><div className="sidebar-brand"><Logo /><span className="version">BETA</span></div>
+    <aside className={`sidebar ${mobileNav ? 'mobile-open' : ''}`}><div className="sidebar-brand"><Logo /><div className="brand-badges"><span className="version">BETA</span><span className="product-version" title="Версия приложения">v{__KRUG_VERSION__}</span></div></div>
       <div className="server-label"><div className="server-icon"><AudioLines size={23} /></div><div><strong>Наш круг</strong><span>Частный сервер</span></div><ChevronDown size={16} /></div>
       <div className="sidebar-scroll"><div className="channel-section-label">ОБЩЕНИЕ{user.role === 'admin' && <button title="Создать канал" aria-label="Создать канал" onClick={() => setModal('channel')}><Plus size={15} /></button>}</div>
         <nav aria-label="Текстовые каналы">{channels.filter(c => c.kind === 'text').map(c => <button key={c.id} className={`channel-link ${current?.id === c.id ? 'selected' : ''}`} onClick={() => { setSelected(c.id); setMobileNav(false); }}><Hash size={19} /><span>{c.name}</span>{unread[c.id] && <span className="unread-marker" role="img" aria-label="Новые сообщения" title="Новые сообщения" />}</button>)}</nav>
