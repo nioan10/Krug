@@ -34,6 +34,8 @@ export function InstallApp({ compact = false, authenticated = false }: { compact
     {help && <Modal title="Установить Округ" onClose={() => setHelp(false)}><div className="install-help"><p>Приложение открывается в отдельном окне. Для звонков и переписки нужен интернет.</p>
       <h3>Windows</h3><p>Установите приложение для компьютера: в нём можно передавать звук выбранной программы вместе с демонстрацией.</p>
       {authenticated ? <a className="primary install-download" href="/api/desktop-installer" download><Download size={16} />Скачать Округ для Windows</a> : <p className="tiny">Войдите в аккаунт, чтобы скачать приложение для Windows.</p>}
+      <h3>Android</h3><p>Установите приложение для телефона. Чаты и голосовые комнаты используют тот же аккаунт.</p>
+      {authenticated ? <a className="primary install-download" href="/api/android-installer"><Download size={16} />Скачать Округ для Android</a> : <p className="tiny">Войдите в аккаунт, чтобы скачать APK.</p>}
       <h3>Установка через браузер</h3><p>На Windows, Linux и Android откройте этот адрес в Chrome или Edge и выберите «Установить приложение» в меню браузера.</p>
       {state.ready && <button className="secondary install-pwa-button" onClick={() => void installPwa()}><Download size={16} />Установить из браузера</button>}
       <h3>iPhone и iPad</h3><p>Откройте адрес в Safari → «Поделиться» → «На экран Домой».</p>

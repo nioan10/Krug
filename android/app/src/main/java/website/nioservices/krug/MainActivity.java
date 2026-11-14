@@ -44,6 +44,7 @@ public final class MainActivity extends Activity {
     private ValueCallback<Uri[]> fileCallback;
     private View fullScreenView;
     private WebChromeClient.CustomViewCallback fullScreenCallback;
+    private AndroidUpdater updater;
 
     private static boolean trusted(Uri uri) {
         return uri != null && "https".equalsIgnoreCase(uri.getScheme()) &&
@@ -71,6 +72,8 @@ public final class MainActivity extends Activity {
         settings.setSupportMultipleWindows(true);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setUserAgentString(settings.getUserAgentString() + " KrugAndroid/1");
+        updater = new AndroidUpdater(this);
+        web.addJavascriptInterface(new NativeBridge(), "KrugAndroidNative");
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, false);
         web.setWebViewClient(new Client());
@@ -86,6 +89,9 @@ public final class MainActivity extends Activity {
     }
 
     private int dp(int value) { return (int) (value * getResources().getDisplayMetrics().density + .5f); }
+    public final class NativeBridge {
+        @android.webkit.JavascriptInterface public void setCallActive(boolean active) { runOnUiThread(() -> { if (!isFinishing() && !isDestroyed()) updater.setCallActive(active); }); }
+    }
 
     private void openExternal(Uri uri) {
         if (uri == null || !("https".equalsIgnoreCase(uri.getScheme()) || "http".equalsIgnoreCase(uri.getScheme()))) return;
@@ -112,7 +118,7 @@ public final class MainActivity extends Activity {
             if (request.isForMainFrame() && request.hasGesture()) openExternal(request.getUrl());
             return true;
         }
-        @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) { hideOffline(); progress.setVisibility(View.VISIBLE); }
+        @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) { updater.setCallActive(true); hideOffline(); progress.setVisibility(View.VISIBLE); }
         @Override public void onPageFinished(WebView view, String url) { progress.setVisibility(View.GONE); CookieManager.getInstance().flush(); }
         @Override public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) { if (request.isForMainFrame()) { progress.setVisibility(View.GONE); showOffline(); } }
     }
@@ -181,6 +187,8 @@ public final class MainActivity extends Activity {
         fileCallback.onReceiveValue(uri != null && "content".equals(uri.getScheme()) ? new Uri[] { uri } : null); fileCallback = null;
     }
     @Override protected void onNewIntent(Intent intent) { super.onNewIntent(intent); if (trusted(intent.getData())) web.loadUrl(intent.getData().toString()); }
+    @Override protected void onResume() { super.onResume(); if (updater != null) updater.onResume(); }
+    @Override protected void onPause() { if (updater != null) updater.onPause(); super.onPause(); }
     @Override public void onBackPressed() {
         if (fullScreenView != null) { ((Chrome) web.getWebChromeClient()).onHideCustomView(); return; }
         if (offline != null) { hideOffline(); web.loadUrl(HOME); return; }
@@ -188,6 +196,7 @@ public final class MainActivity extends Activity {
         super.onBackPressed();
     }
     @Override protected void onDestroy() {
+        updater.stop();
         if (mediaRequest != null) mediaRequest.deny();
         if (fileCallback != null) fileCallback.onReceiveValue(null);
         ((ViewGroup) web.getParent()).removeView(web); web.destroy();

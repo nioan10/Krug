@@ -210,6 +210,33 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     return { ok: true };
   });
   app.get('/api/me', { preHandler: auth }, async req => ({ user: req.user }));
+  const androidFile = (name: string) => {
+    if (!/^Okrug-\d+\.\d+\.\d+\.apk$/.test(name)) throw new ApiError(404, 'Обновление не найдено.');
+    return resolve(config.DESKTOP_UPDATE_DIR, 'android', name);
+  };
+  const readAndroidManifest = async () => {
+    try {
+      const raw = JSON.parse(await readFile(resolve(config.DESKTOP_UPDATE_DIR, 'android', 'latest.json'), 'utf8'));
+      const manifest = z.object({ versionCode: z.number().int().positive(), versionName: z.string().regex(/^\d+\.\d+\.\d+$/), file: z.string().regex(/^Okrug-\d+\.\d+\.\d+\.apk$/), sha256: z.string().regex(/^[a-f0-9]{64}$/), size: z.number().int().positive().max(50 * 1024 * 1024) }).parse(raw);
+      if (manifest.file !== `Okrug-${manifest.versionName}.apk`) throw new Error('Inconsistent Android version');
+      const info = await stat(androidFile(manifest.file));
+      if (!info.isFile() || info.size !== manifest.size) throw new Error('Missing Android package');
+      return manifest;
+    } catch { throw new ApiError(404, 'Обновление Android пока недоступно.'); }
+  };
+  app.get('/api/android-updates/latest.json', { preHandler: auth }, readAndroidManifest);
+  app.get('/api/android-installer', { preHandler: auth }, async (_req, reply) => {
+    const manifest = await readAndroidManifest();
+    return reply.redirect(`/api/android-updates/${manifest.file}`);
+  });
+  app.get('/api/android-updates/:file', { preHandler: auth }, async (req, reply) => {
+    const { file } = z.object({ file: z.string() }).parse(req.params);
+    const path = androidFile(file);
+    let info; try { info = await stat(path); } catch { throw new ApiError(404, 'Установщик пока недоступен.'); }
+    if (!info.isFile() || info.size > 50 * 1024 * 1024) throw new ApiError(404, 'Установщик пока недоступен.');
+    reply.header('Content-Length', info.size).header('Content-Disposition', `attachment; filename="${file}"`).type('application/vnd.android.package-archive');
+    return reply.send(createReadStream(path));
+  });
   app.get('/api/desktop-installer', { preHandler: auth }, async (_req, reply) => {
     let manifest: string;
     try { manifest = await readFile(resolve(config.DESKTOP_UPDATE_DIR, 'latest.yml'), 'utf8'); }

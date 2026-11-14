@@ -29,6 +29,7 @@ export function App() {
   const [studioOpen, setStudioOpen] = useState(false);
   const [broadcastActive, setBroadcastActive] = useState(false);
   useEffect(() => { void window.krugDesktop?.setCallActive(Boolean(call) || joining || broadcastActive).catch(() => {}); }, [call, joining, broadcastActive]);
+  useEffect(() => { window.KrugAndroidNative?.setCallActive(Boolean(call) || joining || broadcastActive); }, [call, joining, broadcastActive]);
   const [toast, setToast] = useState('');
   const [modal, setModal] = useState<'invite' | 'channel' | 'settings' | null>(null);
   const [mobileNav, setMobileNav] = useState(false);

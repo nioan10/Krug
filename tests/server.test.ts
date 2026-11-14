@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -31,6 +31,25 @@ async function member(app: App, admin: string, username = 'member') {
   const response = await app.inject({ method: 'POST', url: '/api/auth/register', headers: headers(), payload: { username, displayName: username, password, invite: token } });
   assert.equal(response.statusCode, 201, response.body); return cookieOf(response);
 }
+
+test('Android updates are private and validate package metadata and filenames', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'krug-android-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, 'android'));
+  const file = 'Okrug-0.1.0.apk'; const content = Buffer.from('synthetic apk');
+  const manifest = { versionCode: 1, versionName: '0.1.0', file, size: content.length, sha256: 'a'.repeat(64) };
+  writeFileSync(join(dir, 'android', file), content); writeFileSync(join(dir, 'android', 'latest.json'), JSON.stringify(manifest));
+  const app = await buildApp({ ...config(), DESKTOP_UPDATE_DIR: dir }); t.after(() => app.close());
+  assert.equal((await app.inject('/api/android-updates/latest.json')).statusCode, 401);
+  assert.equal((await app.inject(`/api/android-updates/${file}`)).statusCode, 401);
+  const admin = await owner(app);
+  assert.deepEqual((await app.inject({ url: '/api/android-updates/latest.json', headers: headers(admin) })).json(), manifest);
+  assert.equal((await app.inject({ url: '/api/android-installer', headers: headers(admin) })).headers.location, `/api/android-updates/${file}`);
+  const apk = await app.inject({ url: `/api/android-updates/${file}`, headers: headers(admin) });
+  assert.equal(apk.statusCode, 200); assert.deepEqual(apk.rawPayload, content);
+  assert.equal((await app.inject({ url: '/api/android-updates/secret.txt', headers: headers(admin) })).statusCode, 404);
+  writeFileSync(join(dir, 'android', 'latest.json'), JSON.stringify({ ...manifest, file: '../secret.apk' }));
+  assert.equal((await app.inject({ url: '/api/android-updates/latest.json', headers: headers(admin) })).statusCode, 404);
+});
 
 test('images are private, persist with their messages and are deleted with them', async t => {
   const app = await buildApp(config()); t.after(() => app.close());
