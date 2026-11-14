@@ -3,6 +3,7 @@ export type ServerEvent =
   | { type: 'ready' }
   | { type: 'unread'; channels: Record<string, boolean> }
   | { type: 'presence'; users: User[] }
+  | { type: 'members-updated' }
   | { type: 'channels'; channels: Channel[] }
   | { type: 'channel-deleted'; channelId: string }
   | ({ type: 'voice-presence' } & VoicePresence)

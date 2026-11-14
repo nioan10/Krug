@@ -7,7 +7,7 @@ import { createStreamMedia, streamToken, sweepStreams, type StreamMedia } from '
 
 export async function registerBroadcasts(app: FastifyInstance, config: Config, auth: (req: FastifyRequest) => Promise<void>, suppliedMedia?: StreamMedia) {
   app.get('/api/broadcasts/config', { preHandler: auth }, async () => ({ enabled: Boolean(config.STREAM_ORIGIN), origin: config.STREAM_ORIGIN }));
-  if (!config.STREAM_ORIGIN) return;
+  if (!config.STREAM_ORIGIN) return async (_userId: string) => true;
   const store = openStreamStore(config.STREAM_DATABASE_PATH);
   const media = suppliedMedia ?? createStreamMedia(config);
   const idOf = (req: FastifyRequest) => z.object({ id: z.string().regex(/^[a-f0-9]{32}$/) }).parse(req.params).id;
@@ -22,10 +22,16 @@ export async function registerBroadcasts(app: FastifyInstance, config: Config, a
   app.post('/api/broadcasts', { preHandler: auth, config: { rateLimit: { max: 6, timeWindow: '1 minute' } } }, async (req, reply) => {
     const input = z.object({ title: z.string().trim().min(1).max(100), quality: z.enum(['720p60', '1080p60']) }).parse(req.body);
     await sweepStreams(store, media);
+    await auth(req);
     const stream = store.create(req.user!.id, input.title, input.quality);
     try { await media.create(stream.id); }
     catch { store.end(stream.id); throw new ApiError(503, 'Медиасервер недоступен. Попробуйте позже.'); }
-    return reply.code(201).send({ stream: view(stream), publisherIdentity: stream.publisherId, ...await streamToken(config, stream, stream.publisherId, true) });
+    try {
+      const token = await streamToken(config, stream, stream.publisherId, true);
+      await auth(req);
+      if (store.require(stream.id).state === 'ended') throw new ApiError(401, 'Сессия завершилась.');
+      return reply.code(201).send({ stream: view(stream), publisherIdentity: stream.publisherId, ...token });
+    } catch (error) { store.end(stream.id); try { await media.close(stream.id); store.db.prepare('UPDATE broadcasts SET mediaClosed=1 WHERE id=?').run(stream.id); } catch { /* The public service retries closing the room. */ } throw error; }
   });
   app.post('/api/broadcasts/:id/live', { preHandler: auth }, async req => {
     const stream = active(req);
@@ -48,4 +54,10 @@ export async function registerBroadcasts(app: FastifyInstance, config: Config, a
     store.ban(stream.id, guestId); return { ok: true };
   });
   app.addHook('onClose', async () => { store.db.close(); });
+  return async (userId: string) => {
+    for (const stream of store.active().filter(item => item.ownerId === userId)) store.end(stream.id);
+    if (!store.pendingClose().some(item => item.ownerId === userId)) return true;
+    await sweepStreams(store, media);
+    return !store.pendingClose().some(item => item.ownerId === userId);
+  };
 }

@@ -46,15 +46,23 @@ export function openStore(config: Config) {
       messageId INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (userId, channelId)
     );
+    CREATE TABLE IF NOT EXISTS blocked_voice_identities (userId TEXT PRIMARY KEY, blockedAt INTEGER NOT NULL, needsStream INTEGER NOT NULL DEFAULT 1);
     CREATE INDEX IF NOT EXISTS messages_channel_id ON messages(channelId, id DESC);
     CREATE INDEX IF NOT EXISTS messages_created ON messages(createdAt);
     CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expiresAt);
   `);
+  const userColumns = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
+  if (!userColumns.some(column => column.name === 'disabledAt')) db.exec('ALTER TABLE users ADD COLUMN disabledAt INTEGER');
+  const inviteColumns = db.prepare('PRAGMA table_info(invites)').all() as { name: string }[];
+  if (!inviteColumns.some(column => column.name === 'usedBy')) db.exec('ALTER TABLE invites ADD COLUMN usedBy TEXT REFERENCES users(id) ON DELETE SET NULL');
+  if (!inviteColumns.some(column => column.name === 'revokedAt')) db.exec('ALTER TABLE invites ADD COLUMN revokedAt INTEGER');
+  const blockedColumns = db.prepare('PRAGMA table_info(blocked_voice_identities)').all() as { name: string }[];
+  if (!blockedColumns.some(column => column.name === 'needsStream')) db.exec('ALTER TABLE blocked_voice_identities ADD COLUMN needsStream INTEGER NOT NULL DEFAULT 1');
   if (!db.prepare("SELECT 1 FROM meta WHERE key = 'initialized'").get()) {
     db.exec('BEGIN IMMEDIATE');
     try {
       const now = Date.now();
-      db.prepare('INSERT INTO invites VALUES (?, ?, ?, NULL, ?, NULL, ?)').run(randomUUID(), digest(config.BOOTSTRAP_INVITE), 'admin', now + 7 * DAY, now);
+      db.prepare('INSERT INTO invites (id,hash,role,createdBy,expiresAt,usedAt,createdAt) VALUES (?, ?, ?, NULL, ?, NULL, ?)').run(randomUUID(), digest(config.BOOTSTRAP_INVITE), 'admin', now + 7 * DAY, now);
       const insert = db.prepare('INSERT INTO channels VALUES (?, ?, ?, ?)');
       insert.run('general', 'общий', 'text', 'Общий чат сервера.');
       insert.run('links', 'находки', 'text', 'Ссылки и обсуждения.');
@@ -66,7 +74,7 @@ export function openStore(config: Config) {
     } catch (error) { db.exec('ROLLBACK'); throw error; }
   }
   const publicUser = (id: string) => db.prepare('SELECT id, username, displayName, role FROM users WHERE id = ?').get(id) as User | undefined;
-  const sessionUser = (hash: string) => db.prepare(`SELECT u.id, u.username, u.displayName, u.role FROM sessions s JOIN users u ON s.userId = u.id WHERE s.hash = ? AND s.expiresAt > ?`).get(hash, Date.now()) as User | undefined;
+  const sessionUser = (hash: string) => db.prepare(`SELECT u.id, u.username, u.displayName, u.role FROM sessions s JOIN users u ON s.userId = u.id WHERE s.hash = ? AND s.expiresAt > ? AND u.disabledAt IS NULL`).get(hash, Date.now()) as User | undefined;
   const channel = (id: string) => db.prepare('SELECT * FROM channels WHERE id = ?').get(id) as Channel | undefined;
   const channels = () => db.prepare('SELECT * FROM channels ORDER BY rowid').all() as Channel[];
   const message = (id: number) => {
@@ -87,7 +95,6 @@ export function openStore(config: Config) {
   };
   const cleanup = () => {
     db.prepare('DELETE FROM sessions WHERE expiresAt <= ?').run(Date.now());
-    db.prepare('DELETE FROM invites WHERE expiresAt < ?').run(Date.now() - 7 * DAY);
   };
   cleanup();
   return { db, publicUser, sessionUser, channel, channels, message, unread, markRead, cleanup };

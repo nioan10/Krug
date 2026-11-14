@@ -72,7 +72,7 @@ export function Chat({ channel, user, compact = false, notify }: { channel: Chan
   }
   const mention = !mentionClosed && draft.slice(0, caret).match(/(?:^|[\s(])@([^\s@]*)$/u);
   const suggestions = mention ? people.filter(person => person.id !== user.id && (person.username.includes(mention[1].toLowerCase()) || person.displayName.toLowerCase().includes(mention[1].toLowerCase()))).slice(0, 8) : [];
-  useEffect(() => { let live = true; void api<{ users: User[] }>('/users').then(result => { if (live) setPeople(result.users); }).catch(() => {}); return () => { live = false; }; }, []);
+  useEffect(() => { let live = true; const load = () => { void api<{ users: User[] }>('/users').then(result => { if (live) setPeople(result.users); }).catch(() => {}); }; load(); const off = subscribe(event => { if (event.type === 'members-updated') load(); }); return () => { live = false; off(); }; }, []);
   function chooseMention(person: User) {
     if (!mention) return;
     const start = caret - mention[1].length - 1;
@@ -103,7 +103,7 @@ export function Chat({ channel, user, compact = false, notify }: { channel: Chan
   useEffect(() => {
     void refresh();
     const off = subscribe(event => {
-      if (event.type === 'ready') { void refresh(); return; }
+      if (event.type === 'ready' || event.type === 'members-updated') { void refresh(); return; }
       pending.current?.push(event);
       setMessages(old => applyEvent(old, event, channel.id));
       if (event.type === 'message' && event.message.channelId === channel.id && !stick.current) setNewBelow(true);

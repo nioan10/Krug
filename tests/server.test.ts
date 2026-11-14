@@ -15,7 +15,7 @@ const origin = 'http://localhost:5173';
 const bootstrap = 'test-only-bootstrap-invite-32-characters-long';
 const password = 'Testing-a-long-password-123!';
 const config = (path = ':memory:') => readConfig({ NODE_ENV: 'test', APP_ORIGIN: origin, DATABASE_PATH: path, LIVEKIT_API_KEY: 'test-api-key', LIVEKIT_API_SECRET: 'test-api-secret-long-enough-for-tests', BOOTSTRAP_INVITE: bootstrap });
-const buildApp = (cfg: ReturnType<typeof config>, media: Partial<MediaService> = {}) => createApp(cfg, { async deleteRoom() {}, async participants() { return {}; }, ...media });
+const buildApp = (cfg: ReturnType<typeof config>, media: Partial<MediaService> = {}) => createApp(cfg, { async deleteRoom() {}, async participants() { return {}; }, async removeParticipant() {}, ...media });
 type App = Awaited<ReturnType<typeof buildApp>>;
 const headers = (cookie = '') => ({ origin, cookie });
 const testSocket = { remoteAddress: '127.0.0.1' } as Socket;
@@ -31,6 +31,93 @@ async function member(app: App, admin: string, username = 'member') {
   const response = await app.inject({ method: 'POST', url: '/api/auth/register', headers: headers(), payload: { username, displayName: username, password, invite: token } });
   assert.equal(response.statusCode, 201, response.body); return cookieOf(response);
 }
+
+test('revoking a used invitation disables its member, sessions and voice, and access can be restored', async t => {
+  let joinedId = ''; const removed: string[] = [];
+  const app = await buildApp(config(), { async participants() { return { lounge: joinedId ? [{ identity: joinedId, microphoneEnabled: true }] : [] }; }, async removeParticipant(room, id) { removed.push(`${room}:${id}`); } });
+  t.after(() => app.close()); const admin = await owner(app);
+  const invitation = (await app.inject({ method: 'POST', url: '/api/invites', headers: headers(admin) })).json();
+  const secret = new URLSearchParams(new URL(invitation.url).hash.slice(1)).get('invite');
+  const registered = await app.inject({ method: 'POST', url: '/api/auth/register', headers: headers(), payload: { username: 'friend', displayName: 'Друг', password, invite: secret } });
+  assert.equal(registered.statusCode, 201); const friend = cookieOf(registered); joinedId = registered.json().user.id;
+  const other = await app.inject({ method: 'POST', url: '/api/auth/login', headers: headers(), payload: { username: 'friend', password } });
+  const socket = await app.injectWS('/api/events', { socket: testSocket, headers: headers(friend) }); t.after(() => socket.terminate());
+  const closed = new Promise<{ code: number; reason: string }>(resolve => socket.once('close', (code, reason) => resolve({ code, reason: reason.toString() })));
+  const listed = (await app.inject({ url: '/api/invites', headers: headers(admin) })).json().invites.find((x: { id: string }) => x.id === invitation.id);
+  assert.equal(listed.usedBy, joinedId); assert.equal(listed.usedByUsername, 'friend');
+  assert.equal((await app.inject({ method: 'DELETE', url: `/api/invites/${invitation.id}`, headers: headers(friend) })).statusCode, 403);
+  const revoke = await app.inject({ method: 'DELETE', url: `/api/invites/${invitation.id}`, headers: headers(admin) });
+  assert.equal(revoke.statusCode, 200); assert.equal(revoke.json().disconnected, true);
+  assert.deepEqual(await closed, { code: 1008, reason: 'Access revoked' });
+  assert.ok(removed.includes(`lounge:${joinedId}`));
+  for (const cookie of [friend, cookieOf(other)]) assert.equal((await app.inject({ url: '/api/me', headers: headers(cookie) })).statusCode, 401);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/auth/login', headers: headers(), payload: { username: 'friend', password } })).statusCode, 401);
+  assert.equal((await app.inject({ url: '/api/users', headers: headers(admin) })).json().users.some((x: { id: string }) => x.id === joinedId), false);
+  assert.equal((await app.inject({ method: 'PATCH', url: `/api/members/${joinedId}/access`, headers: headers(admin), payload: { enabled: true } })).statusCode, 200);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/auth/login', headers: headers(), payload: { username: 'friend', password } })).statusCode, 200);
+  assert.equal((await app.inject({ url: '/api/me', headers: headers(friend) })).statusCode, 401);
+  assert.ok((await app.inject({ url: '/api/invites', headers: headers(admin) })).json().invites.find((x: { id: string }) => x.id === invitation.id).revokedAt);
+});
+
+test('deleting a member protects the owner and anonymises retained chat history and images', async t => {
+  const app = await buildApp(config()); t.after(() => app.close()); const admin = await owner(app); const friend = await member(app, admin);
+  const friendId = (await app.inject({ url: '/api/me', headers: headers(friend) })).json().user.id;
+  const ownerId = (await app.inject({ url: '/api/me', headers: headers(admin) })).json().user.id;
+  const image = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
+  const posted = (await app.inject({ method: 'POST', url: '/api/channels/general/messages', headers: headers(friend), payload: { body: 'hello', image } })).json().message;
+  const remove = (id: string, cookie: string, confirmation: string) => app.inject({ method: 'DELETE', url: `/api/members/${id}`, headers: headers(cookie), payload: { confirmation } });
+  assert.equal((await remove(friendId, friend, 'member')).statusCode, 403);
+  assert.equal((await remove(ownerId, admin, 'owner')).statusCode, 403);
+  assert.equal((await remove(friendId, admin, 'wrong')).statusCode, 400);
+  assert.equal((await remove(friendId, admin, 'member')).statusCode, 200);
+  assert.equal((await app.inject({ url: '/api/me', headers: headers(friend) })).statusCode, 401);
+  const history = (await app.inject({ url: '/api/channels/general/messages', headers: headers(admin) })).json().messages;
+  assert.equal(history[0].body, 'hello'); assert.equal(history[0].user.displayName, 'Удалённый участник');
+  assert.equal((await app.inject({ url: `/api/messages/${posted.id}/image`, headers: headers(admin) })).statusCode, 200);
+  const users = (await app.inject({ url: '/api/members', headers: headers(admin) })).json().members;
+  assert.equal(users.some((x: { id: string }) => x.id === friendId || x.id === '__deleted_user__'), false);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/auth/login', headers: headers(), payload: { username: 'member', password } })).statusCode, 401);
+});
+
+test('access stays revoked when the media server is unavailable', async t => {
+  let fail = true;
+  const app = await buildApp(config(), { async participants() { if (fail) throw Error('offline'); return {}; } }); t.after(() => app.close());
+  const admin = await owner(app); const friend = await member(app, admin);
+  const id = (await app.inject({ url: '/api/me', headers: headers(friend) })).json().user.id;
+  const revoked = await app.inject({ method: 'PATCH', url: `/api/members/${id}/access`, headers: headers(admin), payload: { enabled: false } });
+  assert.equal(revoked.statusCode, 200); assert.equal(revoked.json().disconnected, false);
+  assert.equal((await app.inject({ url: '/api/me', headers: headers(friend) })).statusCode, 401);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/auth/login', headers: headers(), payload: { username: 'member', password } })).statusCode, 401);
+  fail = false;
+});
+
+test('blocked identities are removed again if a stale voice token reconnects', async t => {
+  let id = ''; let count = 0; let nextRemoval!: () => void;
+  const reconnected = new Promise<void>(resolve => { nextRemoval = resolve; });
+  const app = await buildApp(config(), { async participants() { return { lounge: id ? [{ identity: id, microphoneEnabled: false }] : [] }; }, async removeParticipant(_room, userId) { if (userId === id && ++count === 2) nextRemoval(); } });
+  t.after(() => app.close()); const admin = await owner(app); const friend = await member(app, admin);
+  id = (await app.inject({ url: '/api/me', headers: headers(friend) })).json().user.id;
+  assert.equal((await app.inject({ method: 'PATCH', url: `/api/members/${id}/access`, headers: headers(admin), payload: { enabled: false } })).statusCode, 200);
+  let timeout: ReturnType<typeof setTimeout>;
+  await Promise.race([reconnected, new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('Blocked reconnect was not removed')), 6500); })]).finally(() => clearTimeout(timeout));
+  assert.ok(count >= 2);
+});
+
+test('legacy invitations migrate without guessing which existing account used them', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'krug-legacy-access-')); const path = join(directory, 'test.sqlite');
+  let app = await buildApp(config(path));
+  t.after(async () => { await app.close(); rmSync(directory, { recursive: true, force: true }); });
+  const admin = await owner(app); const friend = await member(app, admin); await app.close();
+  const db = new DatabaseSync(path);
+  db.exec('PRAGMA foreign_keys=OFF; ALTER TABLE invites DROP COLUMN usedBy; ALTER TABLE invites DROP COLUMN revokedAt; ALTER TABLE users DROP COLUMN disabledAt; DROP TABLE blocked_voice_identities;');
+  db.close(); app = await buildApp(config(path));
+  const invitations = (await app.inject({ url: '/api/invites', headers: headers(admin) })).json().invites;
+  assert.equal(invitations.length, 1); assert.equal(invitations[0].usedBy, null);
+  const revoked = await app.inject({ method: 'DELETE', url: `/api/invites/${invitations[0].id}`, headers: headers(admin) });
+  assert.equal(revoked.statusCode, 200); assert.equal(revoked.json().accountUnknown, true);
+  assert.equal((await app.inject({ url: '/api/me', headers: headers(friend) })).statusCode, 200);
+  assert.ok((await app.inject({ url: '/api/members', headers: headers(admin) })).json().members.some((person: { username: string }) => person.username === 'member'));
+});
 
 test('Android updates are private and validate package metadata and filenames', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'krug-android-')); t.after(() => rmSync(dir, { recursive: true, force: true }));

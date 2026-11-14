@@ -82,7 +82,7 @@ export function App() {
         if (stopped) return;
         setConnected(false); setOnline([]); setVoicePresence({ rooms: {}, available: false });
         if (event.code === 1008) {
-          if (['Session expired', 'Logged out', 'Password changed'].includes(event.reason)) { signedOut(); notify('Сессия завершилась. Войдите снова.'); }
+          if (['Session expired', 'Logged out', 'Password changed', 'Access revoked'].includes(event.reason)) { signedOut(); notify(event.reason === 'Access revoked' ? 'Владелец отозвал доступ к серверу.' : 'Сессия завершилась. Войдите снова.'); }
           else notify('Слишком много открытых вкладок. Закройте лишние и обновите страницу.');
           return;
         }
@@ -123,7 +123,7 @@ export function App() {
       </div>
       {streamOrigin && <button className={`studio-nav ${studioOpen ? 'selected' : ''}`} onClick={() => { setStudioOpen(true); setMobileNav(false); }}><Radio size={18} />Транслировать{broadcastActive && <span className="live-dot" />}</button>}
       <InstallApp compact authenticated />
-      {user.role === 'admin' && <button className="invite-button" onClick={() => setModal('invite')}><UserPlus size={17} />Пригласить друзей<ArrowUpRight size={15} /></button>}
+      {user.role === 'admin' && <button className="invite-button" onClick={() => setModal('invite')}><UserPlus size={17} />Управление доступом<ArrowUpRight size={15} /></button>}
       {call && <div className="voice-dock"><button onClick={() => { setSelected(call.channel.id); setStudioOpen(false); }}><Signal size={17} /><span>В голосовой комнате<small>{call.channel.name}</small></span></button><button aria-label="Отключиться от звонка" title="Отключиться" onClick={leave}><PhoneOff size={18} /></button></div>}
       <div className="profile"><Avatar name={user.displayName} /><div className="profile-name"><strong>{user.displayName}</strong><span><i className={connected ? 'online-dot' : 'offline-dot'} />{connected ? 'На связи' : 'Переподключение…'}</span></div><button className="icon-button" title="Настройки" aria-label="Настройки" onClick={() => setModal('settings')}><Settings2 size={18} /></button><button className="icon-button" title="Выйти из аккаунта" aria-label="Выйти из аккаунта" onClick={() => void logout()}><LogOut size={17} /></button></div>
     </aside>

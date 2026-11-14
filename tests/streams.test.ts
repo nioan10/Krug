@@ -19,7 +19,7 @@ async function setup(t: TestContext) {
   const config = readConfig({ NODE_ENV: 'test', APP_ORIGIN: origin, DATABASE_PATH: join(directory, 'private.sqlite'), BOOTSTRAP_INVITE: bootstrap, LIVEKIT_URL: 'ws://localhost:7880', LIVEKIT_API_KEY: 'private-test-key', LIVEKIT_API_SECRET: 'private-test-secret-longer-than-32', STREAM_ORIGIN: publicOrigin, STREAM_DATABASE_PATH: join(directory, 'streams.sqlite'), STREAM_LIVEKIT_URL: 'ws://localhost:7890', STREAM_LIVEKIT_API_KEY: 'public-test-key', STREAM_LIVEKIT_API_SECRET: 'public-test-secret-longer-than-32' });
   let hasVideo = false, failCreate = false, failClose = false; const closed: string[] = [];
   const media: StreamMedia = { async create() { if (failCreate) throw new Error('offline'); }, async close(id) { if (failClose) throw new Error('offline'); closed.push(id); }, async inspect() { return { publishing: hasVideo, viewers: 0 }; } };
-  const app = await buildApp(config, { async deleteRoom() {}, async participants() { return {}; } }, media);
+  const app = await buildApp(config, { async deleteRoom() {}, async participants() { return {}; }, async removeParticipant() {} }, media);
   const pub = await buildStreamApp(config, media); await pub.ready();
   const store = openStreamStore(config.STREAM_DATABASE_PATH);
   t.after(async () => { await pub.close(); await app.close(); store.db.close(); rmSync(directory, { recursive: true, force: true }); });
@@ -50,6 +50,17 @@ test('only authenticated members can publish, two streams maximum, owners contro
   assert.equal((await q.control(`/${first.stream.id}/end`)).statusCode, 200);
   assert.ok(q.closed.includes(first.stream.id));
   assert.equal((await q.control(`/${first.stream.id}/heartbeat`)).statusCode, 409);
+});
+
+test('revoking a member closes their active broadcast and denies future control', async t => {
+  const q = await setup(t);
+  const created = await q.create(q.member);
+  const member = (await q.app.inject({ url: '/api/me', headers: { origin, cookie: q.member } })).json().user;
+  const revoked = await q.app.inject({ method: 'PATCH', url: `/api/members/${member.id}/access`, headers: { origin, cookie: q.owner }, payload: { enabled: false } });
+  assert.equal(revoked.statusCode, 200); assert.equal(revoked.json().disconnected, true);
+  assert.equal(q.store.require(created.stream.id).state, 'ended');
+  assert.ok(q.closed.includes(created.stream.id));
+  assert.equal((await q.control(`/${created.stream.id}/heartbeat`, {}, q.member)).statusCode, 401);
 });
 
 test('public API has no account routes and leaks no owner identifiers, session data or real names', async t => {

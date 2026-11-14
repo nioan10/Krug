@@ -11,6 +11,7 @@ export function voiceOccupant(participant: Pick<ParticipantInfo, 'identity' | 't
 export interface MediaService {
   deleteRoom(id: string): Promise<void>;
   participants(channelIds: string[]): Promise<Record<string, VoiceOccupant[]>>;
+  removeParticipant(channelId: string, userId: string): Promise<void>;
 }
 
 export function createMediaService(config: Config): MediaService {
@@ -19,6 +20,10 @@ export function createMediaService(config: Config): MediaService {
   return {
     async deleteRoom(id) {
       try { await client.deleteRoom(id); }
+      catch (error) { if (!missing(error)) throw error; }
+    },
+    async removeParticipant(channelId, userId) {
+      try { await client.removeParticipant(channelId, userId); }
       catch (error) { if (!missing(error)) throw error; }
     },
     async participants(channelIds) {

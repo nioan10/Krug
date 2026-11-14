@@ -80,10 +80,11 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     req.user = user; req.sessionHash = hash;
   };
   const admin = async (req: FastifyRequest) => { await auth(req); if (req.user!.role !== 'admin') throw new ApiError(403, 'Это действие доступно владельцу.'); };
-  await registerBroadcasts(app, config, auth, streamMedia);
+  const revokeBroadcasts = await registerBroadcasts(app, config, auth, streamMedia);
   const createSession = (user: User, reply: FastifyReply) => {
     const token = newSecret();
-    db.prepare('INSERT INTO sessions VALUES (?, ?, ?)').run(digest(token), user.id, Date.now() + 7 * DAY);
+    const created = db.prepare('INSERT INTO sessions (hash,userId,expiresAt) SELECT ?,id,? FROM users WHERE id = ? AND disabledAt IS NULL').run(digest(token), Date.now() + 7 * DAY, user.id);
+    if (!created.changes) throw new ApiError(401, 'Вход недоступен.');
     reply.setCookie(sessionCookie, token, cookieOptions);
     return { user };
   };
@@ -125,6 +126,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
         const rooms = Object.fromEntries(store.channels().filter(channel => channel.kind === 'voice' && !deletingChannels.has(channel.id)).map(channel => [channel.id,
           [...new Map((occupants[channel.id] ?? []).map(person => [person.identity, person])).values()].sort((a, b) => a.identity.localeCompare(b.identity)).flatMap(person => {
             const user = store.publicUser(person.identity);
+            if (db.prepare('SELECT 1 FROM blocked_voice_identities WHERE userId = ?').get(person.identity)) return [];
             const audioState = voiceAudioStates.get(person.identity);
             const deafened = audioState && audioState.channelId === channel.id && audioState.expiresAt > Date.now() ? audioState.deafened : null;
             const afk = Boolean(audioState && audioState.channelId === channel.id && audioState.expiresAt > Date.now() && audioState.afk);
@@ -144,21 +146,60 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     return presenceRequest;
   }
 
+  // Self-hosted LiveKit cannot revoke a previously issued token. Keep enforcing
+  // the block so a stale reconnect is removed as well, including after restart.
+  let accessSweep: Promise<boolean> | undefined;
+  function enforceBlockedAccess() {
+    if (accessSweep) return accessSweep;
+    const blocked = db.prepare('SELECT userId, needsStream FROM blocked_voice_identities').all() as { userId: string; needsStream: number }[];
+    if (!blocked.length) return Promise.resolve(true);
+    accessSweep = (async () => {
+      let ok = true;
+      try {
+        const rooms = await media.participants(store.channels().filter(channel => channel.kind === 'voice').map(channel => channel.id));
+        const blockedIds = new Set(blocked.map(row => row.userId));
+        const removals = Object.entries(rooms).flatMap(([room, occupants]) => occupants.filter(person => blockedIds.has(person.identity)).map(person => media.removeParticipant(room, person.identity)));
+        if ((await Promise.allSettled(removals)).some(result => result.status === 'rejected')) ok = false;
+      } catch { ok = false; }
+      for (const row of blocked.filter(item => item.needsStream)) {
+        try { if (await revokeBroadcasts(row.userId)) db.prepare('UPDATE blocked_voice_identities SET needsStream = 0 WHERE userId = ?').run(row.userId); else ok = false; }
+        catch { ok = false; }
+      }
+      return ok;
+    })().finally(() => { accessSweep = undefined; });
+    return accessSweep;
+  }
+  const blockTimer = setInterval(() => { void enforceBlockedAccess(); }, 3000);
+  blockTimer.unref();
+  function closeUserSessions(userId: string) {
+    for (const [socket, state] of sockets) if (state.user.id === userId) socket.close(1008, 'Access revoked');
+    voiceAudioStates.delete(userId);
+    presence();
+  }
+  async function finishRevocation(userId: string) {
+    closeUserSessions(userId);
+    broadcast({ type: 'members-updated' });
+    // A sweep already in progress may have started before this user was blocked.
+    if (accessSweep) await accessSweep;
+    const disconnected = await enforceBlockedAccess();
+    return { ok: true, disconnected };
+  }
+
   app.get('/api/health', async () => ({ status: 'ok' }));
   app.post('/api/auth/register', { config: authRate }, async (req, reply) => {
     const input = credentials.extend({ displayName: z.string().trim().min(1).max(32), invite: z.string().min(32).max(128) }).parse(req.body);
     const inviteHash = digest(input.invite);
-    const invite = db.prepare('SELECT * FROM invites WHERE hash = ? AND usedAt IS NULL AND expiresAt > ?').get(inviteHash, Date.now()) as { id: string; role: User['role'] } | undefined;
+    const invite = db.prepare('SELECT * FROM invites WHERE hash = ? AND usedAt IS NULL AND revokedAt IS NULL AND expiresAt > ?').get(inviteHash, Date.now()) as { id: string; role: User['role'] } | undefined;
     if (!invite) throw new ApiError(400, 'Приглашение недействительно, истекло или уже использовано.');
-    if ((db.prepare('SELECT count(*) AS n FROM users').get() as { n: number }).n >= 100) throw new ApiError(409, 'Достигнут лимит сервера: 100 аккаунтов.');
+    if ((db.prepare("SELECT count(*) AS n FROM users WHERE id != '__deleted_user__'").get() as { n: number }).n >= 100) throw new ApiError(409, 'Достигнут лимит сервера: 100 аккаунтов.');
     const password = await hashPassword(input.password);
     const user: User = { id: randomUUID(), username: input.username, displayName: input.displayName, role: invite.role };
     db.exec('BEGIN IMMEDIATE');
     try {
-      const used = db.prepare('UPDATE invites SET usedAt = ? WHERE id = ? AND usedAt IS NULL AND expiresAt > ?').run(Date.now(), invite.id, Date.now());
-      if (!used.changes) throw new ApiError(400, 'Приглашение уже использовано или истекло.');
       if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(input.username)) throw new ApiError(409, 'Этот логин уже занят.');
-      db.prepare('INSERT INTO users VALUES (?, ?, ?, ?, ?, ?)').run(user.id, user.username, user.displayName, password, user.role, Date.now());
+      db.prepare('INSERT INTO users (id,username,displayName,password,role,createdAt) VALUES (?, ?, ?, ?, ?, ?)').run(user.id, user.username, user.displayName, password, user.role, Date.now());
+      const used = db.prepare('UPDATE invites SET usedAt = ?, usedBy = ? WHERE id = ? AND usedAt IS NULL AND revokedAt IS NULL AND expiresAt > ?').run(Date.now(), user.id, invite.id, Date.now());
+      if (!used.changes) throw new ApiError(400, 'Приглашение уже использовано, отозвано или истекло.');
       db.exec('COMMIT');
     } catch (error) { db.exec('ROLLBACK'); throw error; }
     return reply.code(201).send(createSession(user, reply));
@@ -171,7 +212,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     if (attempt.count >= 12) throw new ApiError(429, 'Слишком много попыток. Повторите вход через 15 минут.');
     attempt.count++; attempts.set(key, attempt);
     if (attempts.size > 10_000) attempts.delete(attempts.keys().next().value!);
-    const user = db.prepare('SELECT id, password FROM users WHERE username = ?').get(input.username) as { id: string; password: string } | undefined;
+    const user = db.prepare('SELECT id, password FROM users WHERE username = ? AND disabledAt IS NULL').get(input.username) as { id: string; password: string } | undefined;
     const matches = await verifyPassword(input.password, user?.password ?? dummy);
     if (!user || !matches) throw new ApiError(401, 'Неверный логин или пароль.');
     attempts.delete(key);
@@ -282,7 +323,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     return reply.send(createReadStream(path));
   });
   app.get('/api/channels', { preHandler: auth }, async () => ({ channels: store.channels() }));
-  app.get('/api/users', { preHandler: auth }, async () => ({ users: db.prepare('SELECT id, username, displayName, role FROM users ORDER BY displayName COLLATE NOCASE').all() }));
+  app.get('/api/users', { preHandler: auth }, async () => ({ users: db.prepare('SELECT id, username, displayName, role FROM users WHERE disabledAt IS NULL ORDER BY displayName COLLATE NOCASE').all() }));
   app.get('/api/unread', { preHandler: auth }, async req => ({ channels: store.unread(req.user!.id) }));
   app.post('/api/channels/:id/read', { preHandler: auth }, async req => {
     const id = channelId(req); requireChannel(id);
@@ -399,18 +440,72 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     if (channel.kind !== 'voice') throw new ApiError(400, 'Это текстовый канал.');
     const token = new AccessToken(config.LIVEKIT_API_KEY, config.LIVEKIT_API_SECRET, { identity: req.user!.id, name: req.user!.displayName, ttl: '2m' });
     token.addGrant({ roomJoin: true, room: channel.id, canPublish: true, canSubscribe: true, canPublishData: false, canUpdateOwnMetadata: false });
-    return { token: await token.toJwt(), url: config.LIVEKIT_URL };
+    const signed = await token.toJwt();
+    await auth(req);
+    return { token: signed, url: config.LIVEKIT_URL };
   });
-  app.get('/api/invites', { preHandler: admin }, async () => ({ invites: db.prepare('SELECT id, expiresAt, usedAt, createdAt FROM invites WHERE role = ? ORDER BY createdAt DESC LIMIT 100').all('member') }));
+  const member = (id: string) => {
+    const user = db.prepare('SELECT id,username,displayName,role,disabledAt FROM users WHERE id = ?').get(id) as (User & { disabledAt: number | null }) | undefined;
+    if (!user) throw new ApiError(404, 'Участник не найден.');
+    if (user.role !== 'member' || id === '__deleted_user__') throw new ApiError(403, 'Нельзя изменить доступ владельца.');
+    return user;
+  };
+  function blockUser(userId: string) {
+    db.prepare('UPDATE users SET disabledAt = COALESCE(disabledAt, ?) WHERE id = ?').run(Date.now(), userId);
+    db.prepare('DELETE FROM sessions WHERE userId = ?').run(userId);
+    db.prepare('INSERT INTO blocked_voice_identities (userId, blockedAt, needsStream) VALUES (?, ?, 1) ON CONFLICT(userId) DO UPDATE SET needsStream = 1').run(userId, Date.now());
+  }
+  app.get('/api/members', { preHandler: admin }, async () => ({ members: db.prepare("SELECT id,username,displayName,role,createdAt,disabledAt FROM users WHERE id != '__deleted_user__' ORDER BY role ASC, displayName COLLATE NOCASE").all() }));
+  app.patch('/api/members/:id/access', { preHandler: admin }, async req => {
+    const id = channelId(req); member(id);
+    const { enabled } = z.object({ enabled: z.boolean() }).parse(req.body);
+    if (enabled) {
+      if (accessSweep) await accessSweep;
+      db.exec('BEGIN IMMEDIATE');
+      try { db.prepare('UPDATE users SET disabledAt = NULL WHERE id = ?').run(id); db.prepare('DELETE FROM blocked_voice_identities WHERE userId = ?').run(id); db.exec('COMMIT'); }
+      catch (error) { db.exec('ROLLBACK'); throw error; }
+      broadcast({ type: 'members-updated' });
+      return { ok: true, disconnected: true };
+    }
+    db.exec('BEGIN IMMEDIATE');
+    try { blockUser(id); db.exec('COMMIT'); } catch (error) { db.exec('ROLLBACK'); throw error; }
+    return finishRevocation(id);
+  });
+  app.delete('/api/members/:id', { preHandler: admin }, async req => {
+    const id = channelId(req), user = member(id);
+    const { confirmation } = z.object({ confirmation: z.string().max(24) }).parse(req.body);
+    if (confirmation !== user.username) throw new ApiError(400, 'Введите логин участника для подтверждения.');
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      blockUser(id);
+      db.prepare("INSERT OR IGNORE INTO users (id,username,displayName,password,role,createdAt,disabledAt) VALUES ('__deleted_user__','!deleted!','Удалённый участник','', 'member', ?, ?)").run(Date.now(), Date.now());
+      db.prepare("UPDATE messages SET userId = '__deleted_user__' WHERE userId = ?").run(id);
+      db.prepare('UPDATE invites SET revokedAt = COALESCE(revokedAt, ?) WHERE usedBy = ?').run(Date.now(), id);
+      db.prepare('DELETE FROM users WHERE id = ?').run(id);
+      db.exec('COMMIT');
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
+    return finishRevocation(id);
+  });
+  app.get('/api/invites', { preHandler: admin }, async () => ({ invites: db.prepare('SELECT i.id,i.expiresAt,i.usedAt,i.createdAt,i.revokedAt,i.usedBy,u.username AS usedByUsername,u.displayName AS usedByName,u.disabledAt AS usedByDisabledAt FROM invites i LEFT JOIN users u ON u.id = i.usedBy WHERE i.role = ? ORDER BY i.createdAt DESC LIMIT 500').all('member') }));
   app.post('/api/invites', { preHandler: admin, config: { rateLimit: { max: 20, timeWindow: '1 hour' } } }, async (_req, reply) => {
     const secret = newSecret(); const id = randomUUID(); const expiresAt = Date.now() + 7 * DAY;
-    db.prepare('INSERT INTO invites VALUES (?, ?, ?, ?, ?, NULL, ?)').run(id, digest(secret), 'member', _req.user!.id, expiresAt, Date.now());
+    db.prepare('INSERT INTO invites (id,hash,role,createdBy,expiresAt,usedAt,createdAt) VALUES (?, ?, ?, ?, ?, NULL, ?)').run(id, digest(secret), 'member', _req.user!.id, expiresAt, Date.now());
     // Fragment keeps the invitation out of HTTP requests and server logs.
     return reply.code(201).send({ id, url: `${config.APP_ORIGIN}/#invite=${secret}`, expiresAt });
   });
   app.delete('/api/invites/:id', { preHandler: admin }, async req => {
-    db.prepare('DELETE FROM invites WHERE id = ? AND role = ?').run(channelId(req), 'member');
-    return { ok: true };
+    const id = channelId(req);
+    const invite = db.prepare('SELECT id,usedAt,usedBy FROM invites WHERE id = ? AND role = ?').get(id, 'member') as { id: string; usedAt: number | null; usedBy: string | null } | undefined;
+    if (!invite) throw new ApiError(404, 'Приглашение не найдено.');
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.prepare('UPDATE invites SET revokedAt = COALESCE(revokedAt, ?) WHERE id = ?').run(Date.now(), id);
+      if (invite.usedBy) { member(invite.usedBy); blockUser(invite.usedBy); }
+      db.exec('COMMIT');
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
+    if (invite.usedBy) return finishRevocation(invite.usedBy);
+    broadcast({ type: 'members-updated' });
+    return { ok: true, disconnected: true, accountUnknown: Boolean(invite.usedAt) };
   });
   app.get('/api/events', { websocket: true, preHandler: auth }, (socket, req) => {
     if ([...sockets.values()].filter(s => s.user.id === req.user!.id).length >= 5) { socket.close(1008, 'Too many tabs'); return; }
@@ -445,7 +540,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
       return reply.code(404).send({ message: 'Не найдено.' });
     });
   }
-  app.addHook('preClose', async () => { closing = true; clearInterval(voiceHeartbeat); for (const socket of sockets.keys()) socket.terminate(); await presenceRequest; });
+  app.addHook('preClose', async () => { closing = true; clearInterval(voiceHeartbeat); clearInterval(blockTimer); for (const socket of sockets.keys()) socket.terminate(); await presenceRequest; await accessSweep; });
   app.addHook('onClose', async () => { clearInterval(heartbeat); db.close(); });
   return app;
 }
