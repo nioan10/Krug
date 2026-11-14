@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { LiveKitRoom, TrackToggle, useParticipants, useTracks, VideoTrack, useIsSpeaking, useIsMuted, useConnectionState, StartAudio, type TrackReference } from '@livekit/components-react';
-import { Room, Track, ConnectionState, ParticipantEvent, type Participant, type RoomOptions } from 'livekit-client';
+import { Room, Track, ConnectionState, ParticipantEvent, LocalAudioTrack, type Participant, type RoomOptions } from 'livekit-client';
 import { Headphones, HeadphoneOff, Mic, MicOff, MonitorUp, PhoneOff, Settings2, Video, Maximize2, Radio, Volume2 } from 'lucide-react';
 import { Avatar, Modal } from './ui';
 import { IncomingAudio, MicrophoneToggle, VolumeSlider } from './AudioControls';
@@ -65,6 +65,21 @@ function CallContent({ room, onLeave, notify, channelId, presence }: { room: Roo
     return () => { cancelled = true; clearInterval(timer); };
   }, [room, state]);
   const [deafened, setDeafened] = useState(false);
+  const [noiseSuppression, setNoiseSuppression] = useState(() => { try { return localStorage.getItem('krug-noise-suppression') !== 'off'; } catch { return true; } });
+  const [changingNoise, setChangingNoise] = useState(false);
+  useEffect(() => { room.options.audioCaptureDefaults = { ...room.options.audioCaptureDefaults, noiseSuppression }; }, [room, noiseSuppression]);
+  async function changeNoiseSuppression(enabled: boolean) {
+    if (changingNoise) return;
+    setChangingNoise(true);
+    try {
+      const track = room.localParticipant.getTrackPublication(Track.Source.Microphone)?.track;
+      if (track instanceof LocalAudioTrack) await track.applyConstraints({ noiseSuppression: enabled });
+      room.options.audioCaptureDefaults = { ...room.options.audioCaptureDefaults, noiseSuppression: enabled };
+      setNoiseSuppression(enabled);
+      try { localStorage.setItem('krug-noise-suppression', enabled ? 'on' : 'off'); } catch { /* Keep the current setting for this session. */ }
+    } catch { notify('Не удалось изменить шумоподавление для этого микрофона.'); }
+    finally { setChangingNoise(false); }
+  }
   const stateRequests = useRef<Promise<void>>(Promise.resolve());
   useEffect(() => {
     if (state !== ConnectionState.Connected) return;
@@ -103,7 +118,7 @@ function CallContent({ room, onLeave, notify, channelId, presence }: { room: Roo
       <button title="Устройства" aria-label="Настроить устройства" onClick={() => setDevices(true)}><Settings2 size={20} /></button>
       <button className="hangup" title="Выйти из звонка" aria-label="Выйти из звонка" onClick={onLeave}><PhoneOff size={21} /></button>
     </div><StartAudio label="Нажмите, чтобы включить звук" /></div>
-    {devices && <DeviceSettings onClose={closeDevices} notify={notify}><VolumeSlider label="Входящий звук" value={levels.master} onChange={master => setLevels(old => ({ ...old, master }))} /><VolumeSlider label="Громкость микрофона" value={levels.microphone} max={2} onChange={microphone => setLevels(old => ({ ...old, microphone }))} /><p className="tiny">Уровень микрофона меняет то, как вас слышат другие. Выше 100% — усиление; если голос искажается, уменьшите уровень.</p></DeviceSettings>}
+    {devices && <DeviceSettings onClose={closeDevices} notify={notify}><label className="noise-setting"><span><strong>Шумоподавление</strong><small>Уменьшает фоновый шум микрофона средствами устройства</small></span><input type="checkbox" checked={noiseSuppression} disabled={changingNoise} onChange={event => void changeNoiseSuppression(event.target.checked)} /></label><VolumeSlider label="Входящий звук" value={levels.master} onChange={master => setLevels(old => ({ ...old, master }))} /><VolumeSlider label="Громкость микрофона" value={levels.microphone} max={2} onChange={microphone => setLevels(old => ({ ...old, microphone }))} /><p className="tiny">Уровень микрофона меняет то, как вас слышат другие. Выше 100% — усиление; если голос искажается, уменьшите уровень.</p></DeviceSettings>}
     {volumeTarget && <Modal title="Громкость участника" onClose={closeVolume}><div className="form-stack"><VolumeSlider label={target?.name || 'Участник'} value={levels.participants[volumeTarget] ?? 1} onChange={value => setLevels(old => ({ ...old, participants: { ...old.participants, [volumeTarget]: value } }))} /><p className="muted">Меняет только то, как вы слышите этого участника, включая звук его демонстрации экрана.</p>{!target && <p className="tiny">Участник вышел из комнаты. Настройка сохранена.</p>}<button className="secondary" onClick={() => setLevels(old => ({ ...old, participants: { ...old.participants, [volumeTarget]: 1 } }))}>Сбросить до 100%</button></div></Modal>}
   </div>;
 }
