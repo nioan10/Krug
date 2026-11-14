@@ -59,6 +59,12 @@ internal sealed class DesktopWindow : Form
         FormClosed += (_, _) => { navigationGeneration++; audioGeneration++; closing.Cancel(); updateTimer.Dispose(); audio?.Dispose(); };
     }
 
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        WindowTheme.Apply(Handle);
+    }
+
     private async void InitializeAsync(object? sender, EventArgs args)
     {
         try
