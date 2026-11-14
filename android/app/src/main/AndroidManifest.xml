@@ -14,9 +14,9 @@
     <application android:label="Округ" android:icon="@drawable/icon" android:roundIcon="@drawable/icon" android:theme="@style/AppTheme" android:usesCleartextTraffic="false" android:allowBackup="false" android:enableOnBackInvokedCallback="false">
         <provider android:name=".ApkProvider" android:authorities="website.nioservices.krug.updates" android:exported="false" android:grantUriPermissions="true" />
         <service android:name=".CallService" android:exported="false" android:foregroundServiceType="mediaPlayback|microphone" />
-        <activity android:name=".MainActivity" android:exported="true" android:configChanges="orientation|screenSize|keyboardHidden" android:windowSoftInputMode="adjustResize">
+        <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop" android:configChanges="orientation|screenSize|keyboardHidden" android:windowSoftInputMode="adjustResize">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
-            <intent-filter><action android:name="android.intent.action.VIEW" /><category android:name="android.intent.category.DEFAULT" /><category android:name="android.intent.category.BROWSABLE" /><data android:scheme="https" android:host="chat.nioservices.website" /></intent-filter>
+            <intent-filter><action android:name="android.intent.action.VIEW" /><category android:name="android.intent.category.DEFAULT" /><category android:name="android.intent.category.BROWSABLE" /><data android:scheme="https" android:host="chat.nioservices.website" android:path="/" /></intent-filter>
         </activity>
     </application>
 </manifest>
