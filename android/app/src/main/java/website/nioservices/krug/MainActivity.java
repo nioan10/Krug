@@ -118,7 +118,9 @@ public final class MainActivity extends Activity {
         layout.setPadding(dp(32), dp(32), dp(32), dp(32)); layout.setBackgroundColor(Color.rgb(17, 23, 19));
         TextView title = new TextView(this); title.setText("Округ"); title.setTextColor(Color.rgb(190, 238, 154)); title.setTextSize(30); title.setGravity(Gravity.CENTER);
         TextView subtitle = new TextView(this); subtitle.setText("Не удалось подключиться. Проверьте интернет и попробуйте снова."); subtitle.setTextColor(Color.rgb(168, 185, 160)); subtitle.setTextSize(15); subtitle.setGravity(Gravity.CENTER); subtitle.setPadding(0, dp(16), 0, dp(20));
-        Button retry = new Button(this); retry.setText("Повторить"); retry.setOnClickListener(v -> { hideOffline(); web.loadUrl(HOME); });
+        Button retry = new Button(this); retry.setText("Повторить"); retry.setTextColor(Color.rgb(25, 39, 21)); retry.setAllCaps(false);
+        android.graphics.drawable.GradientDrawable button = new android.graphics.drawable.GradientDrawable(); button.setColor(Color.rgb(182, 230, 141)); button.setCornerRadius(dp(10)); retry.setBackground(button);
+        retry.setOnClickListener(v -> { hideOffline(); web.loadUrl(HOME); });
         layout.addView(title); layout.addView(subtitle); layout.addView(retry); offline = layout;
         root.addView(offline, new FrameLayout.LayoutParams(-1, -1));
     }
@@ -132,7 +134,7 @@ public final class MainActivity extends Activity {
         }
         @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) { updater.setCallActive(true); hideOffline(); progress.setVisibility(View.VISIBLE); }
         @Override public void onPageFinished(WebView view, String url) { progress.setVisibility(View.GONE); CookieManager.getInstance().flush(); }
-        @Override public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) { if (request.isForMainFrame()) { progress.setVisibility(View.GONE); showOffline(); } }
+        @Override public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) { if (request.isForMainFrame()) { android.util.Log.w("Okrug", "Main page load failed, code " + error.getErrorCode()); progress.setVisibility(View.GONE); showOffline(); } }
     }
 
     private void finishMediaPermission() {

@@ -55,5 +55,7 @@ jobs:
         if: always()
         with:
           name: okrug-android-emulator
-          path: android-artifact/emulator.png
+          path: |
+            android-artifact/emulator.png
+            android-artifact/emulator.log
           if-no-files-found: ignore

@@ -8,6 +8,8 @@ adb shell pidof website.nioservices.krug >/dev/null
 adb shell dumpsys activity activities | grep -q 'website.nioservices.krug/.MainActivity'
 adb shell screencap -p /sdcard/okrug-test.png
 adb pull /sdcard/okrug-test.png android-artifact/emulator.png
+adb logcat -d -s Okrug:W AndroidRuntime:E > android-artifact/emulator.log
+adb shell getprop net.dns1 >> android-artifact/emulator.log || true
 if adb logcat -d -s AndroidRuntime:E | grep -q 'FATAL EXCEPTION'; then
   adb logcat -d -s AndroidRuntime:E
   exit 1
