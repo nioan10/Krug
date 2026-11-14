@@ -1,13 +1,22 @@
 // Native installation is deferred until the renderer explicitly reports no active call.
-function createUpdateController({ install, report, schedule = setTimeout }) {
-  let inCall = null, ready = false, scheduled = false;
+function createUpdateController({ install, report, schedule = setTimeout, prepare, onPrepareError = () => {} }) {
+  let inCall = null, ready = false, scheduled = false, preparing = false;
   function maybeInstall() {
-    if (!ready || inCall !== false || scheduled) return;
+    if (!ready || inCall !== false || scheduled || preparing) return;
     scheduled = true;
     schedule(() => {
       scheduled = false;
       if (!ready || inCall !== false) return;
-      ready = false; report({ state: 'installing' }); install();
+      function finish() {
+        preparing = false;
+        if (!ready || inCall !== false) return;
+        ready = false; report({ state: 'installing' }); install();
+      }
+      if (!prepare) return finish();
+      preparing = true;
+      Promise.resolve().then(prepare).then(finish, () => {
+        preparing = false; ready = false; report({ state: 'error' }); onPrepareError();
+      });
     }, 1000);
   }
   return {

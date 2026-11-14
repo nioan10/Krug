@@ -8,4 +8,10 @@
   <ItemGroup>
     <PackageReference Include="NAudio.Wasapi" Version="3.3.0" />
   </ItemGroup>
+  <!-- Experimental only: keep the audio libraries intact while trimming the
+       framework. Do not use for a release until capture is tested end to end. -->
+  <ItemGroup Condition="'$(KrugExperimentalTrim)' == 'true'">
+    <TrimmerRootAssembly Include="NAudio.Wasapi" />
+    <TrimmerRootAssembly Include="NAudio.Core" />
+  </ItemGroup>
 </Project>

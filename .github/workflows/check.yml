@@ -33,3 +33,21 @@ jobs:
       - name: Clean up media test
         if: always()
         run: docker rm -f krug-media-test || true
+  desktop-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+      - run: npm install --global pnpm@11.25.0
+      - run: pnpm install --frozen-lockfile
+      - run: dotnet build desktop/session-helper/Krug.SessionHelper.csproj -c Release
+      - run: dotnet run --project tests/session-ticket
+      - run: dotnet run --project tests/webview-audio
+      - run: dotnet run --project tests/webview-update-gate
+      - run: dotnet build desktop/webview/desktop/Krug.Desktop.csproj -c Release -p:KrugRelease=true
+      - run: node --import tsx --test tests/desktop-updates.test.ts tests/desktop-session-migration.test.ts tests/session-migration-integration.test.ts

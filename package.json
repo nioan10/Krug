@@ -1,6 +1,6 @@
 {
   "name": "krug",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "main": "desktop/main.cjs",
@@ -19,7 +19,10 @@
     "start": "node --env-file=.env --import tsx server/index.ts",
     "test": "node --import tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "desktop:prepare": "node scripts/build-desktop-updater.mjs && dotnet publish desktop/capture/Krug.Capture.csproj -c Release -r win-x64 --self-contained true -o desktop/capture/publish",
+    "desktop:prepare": "node scripts/build-desktop-updater.mjs && dotnet build desktop/session-helper/Krug.SessionHelper.csproj -c Release && dotnet publish desktop/capture/Krug.Capture.csproj -c Release -r win-x64 --self-contained true -o desktop/capture/publish",
+    "desktop:prepare:experimental-trim": "dotnet publish desktop/capture/Krug.Capture.csproj -c Release -r win-x64 --self-contained true -p:PublishTrimmed=true -p:KrugExperimentalTrim=true -o .local/capture-experimental-trim",
+    "desktop:build:webview-preview": "node scripts/build-webview-preview.mjs",
+    "desktop:build:webview-release": "node scripts/build-webview-preview.mjs --release",
     "desktop:build": "pnpm desktop:prepare && electron-builder --win nsis --x64"
   },
   "build": {
@@ -31,6 +34,7 @@
     "files": [
       "desktop/main.cjs",
       "desktop/update-controller.cjs",
+      "desktop/session-migration.cjs",
       "desktop/preload.cjs",
       "desktop/picker*",
       "desktop/permission*",
@@ -44,6 +48,11 @@
       {
         "from": "desktop/capture/publish",
         "to": "capture"
+      },
+      {
+        "from": "desktop/session-helper/bin/Release/net48",
+        "to": "session-helper",
+        "filter": ["*.exe", "*.exe.config", "*.dll"]
       }
     ],
     "publish": [

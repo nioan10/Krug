@@ -3,6 +3,7 @@ const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const path = require('node:path');
 const { createUpdateController } = require('./update-controller.cjs');
+const { prepareMigration } = require('./session-migration.cjs');
 // Local development is explicit and is unavailable in packaged releases.
 const ORIGIN = !app.isPackaged && process.env.KRUG_DESKTOP_DEV === '1' ? 'http://127.0.0.1:5173' : 'https://chat.nioservices.website';
 const helper = app.isPackaged ? path.join(process.resourcesPath, 'capture', 'Krug.Capture.exe') : path.join(__dirname, 'capture', 'publish', 'Krug.Capture.exe');
@@ -120,18 +121,27 @@ function configureUpdates() {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.disableDifferentialDownload = true;
-  updateController = createUpdateController({ install: () => autoUpdater.quitAndInstall(true, true), report: reportUpdate });
-  let checking = false, downloading = false, pending = false;
+  let checking = false, downloading = false, pending = false, migrateToWebView = false;
+  updateController = createUpdateController({
+    install: () => autoUpdater.quitAndInstall(true, true), report: reportUpdate,
+    prepare: async () => {
+      if (!migrateToWebView) return;
+      await prepareMigration({ origin: ORIGIN, sessionFetch: (...args) => mainWindow.webContents.session.fetch(...args),
+        helper: path.join(process.resourcesPath, 'session-helper', 'Krug.SessionHelper.exe'),
+        directory: path.join(app.getPath('appData'), 'KrugMigration') });
+    },
+    onPrepareError: () => { pending = false; },
+  });
   autoUpdater.on('update-available', () => { downloading = true; reportUpdate({ state: 'downloading', percent: 0 }); });
   autoUpdater.on('update-not-available', () => reportUpdate({ state: 'idle' }));
   autoUpdater.on('download-progress', info => reportUpdate({ state: 'downloading', percent: Math.max(0, Math.min(100, Math.round(info.percent))) }));
-  autoUpdater.on('update-downloaded', () => { downloading = false; pending = true; updateController.downloaded(); });
+  autoUpdater.on('update-downloaded', info => { downloading = false; pending = true; migrateToWebView = info.krugRuntime === 'webview2'; updateController.downloaded(); });
   autoUpdater.on('error', () => { if (downloading || pending) reportUpdate({ state: 'error' }); downloading = false; pending = false; });
   async function check() {
     if (checking || downloading || pending || !mainWindow || mainWindow.isDestroyed()) return;
     checking = true;
     try {
-      const response = await mainWindow.webContents.session.fetch(`${ORIGIN}/api/desktop-updates/access`, { credentials: 'include' });
+      const response = await mainWindow.webContents.session.fetch(`${ORIGIN}/api/desktop-updates/access`, { credentials: 'include', headers: { 'X-Krug-Desktop-Capability': 'migration-v1' } });
       if (!response.ok) return;
       const data = await response.json();
       if (typeof data.token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(data.token)) return;
