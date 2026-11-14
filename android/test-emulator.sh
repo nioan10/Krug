@@ -21,7 +21,7 @@ adb shell dumpsys activity services website.nioservices.krug | grep -q 'isForegr
 adb shell input keyevent KEYCODE_HOME
 sleep 2
 adb shell dumpsys activity services website.nioservices.krug | grep -q 'isForeground=true'
-adb shell run-as website.nioservices.krug am stopservice --user 0 -n website.nioservices.krug/.CallService
+adb shell run-as website.nioservices.krug am stopservice --user 0 -n website.nioservices.krug/.CallService || true
 if grep -q 'Main page load failed' android-artifact/emulator.log; then
   cat android-artifact/emulator.log
   exit 1
