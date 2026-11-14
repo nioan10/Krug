@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowDown, ArrowUp, Hash, MessageCircle, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, Hash, MessageCircle, Smile, Trash2 } from 'lucide-react';
 import { api, errorText, type Channel, type Message, type User } from './api';
 import { subscribe, type ServerEvent } from './events';
 import { Avatar } from './ui';
+
+const emojiGroups = [
+  { name: 'Эмоции', items: '😀 😃 😄 😁 😆 😅 😂 🤣 😊 🙂 🙃 😉 😍 🥰 😘 😎 🤔 🫡 🤗 🤩 😏 😴 😭 🥲 😢 😤 😡 🥳 😇 🤯 😳 🫠'.split(' ') },
+  { name: 'Жесты', items: '👍 👎 👏 🙌 🤝 🫶 👋 🤙 ✌️ 🤞 👌 🤌 🤟 🤘 💪 🙏 🫂 👀 💀 🔥 ❤️ 🧡 💛 💚 💙 💜 🖤 🤍 💔 💯 ✨ 🎉'.split(' ') },
+  { name: 'Разное', items: '🐱 🐶 🐼 🦊 🐸 🐻 🐧 🐙 🌸 🌈 ☀️ 🌙 ⭐ ⚡ 🍕 🍔 🍟 🍿 🍰 ☕ 🍵 🎮 🎲 🎧 🎵 🎬 🚀 💻 💡 ✅ ❌ ❓'.split(' ') },
+];
 
 function applyEvent(messages: Message[], event: ServerEvent, id: string): Message[] {
   if (event.type === 'message' && event.message.channelId === id) return [...messages.filter(m => m.id !== event.message.id), event.message].sort((a, b) => a.id - b.id);
@@ -20,7 +26,25 @@ export function Chat({ channel, user, compact = false, notify }: { channel: Chan
   const [caret, setCaret] = useState(0);
   const [mentionClosed, setMentionClosed] = useState(false);
   const [mentionIndex, setMentionIndex] = useState(0);
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const [emojiGroup, setEmojiGroup] = useState(0);
+  const emojiContainer = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (!emojiOpen) return;
+    const outside = (event: PointerEvent) => { if (!emojiContainer.current?.contains(event.target as Node)) setEmojiOpen(false); };
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') { setEmojiOpen(false); input.current?.focus(); } };
+    document.addEventListener('pointerdown', outside); document.addEventListener('keydown', escape);
+    return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape); };
+  }, [emojiOpen]);
+  function insertEmoji(emoji: string) {
+    const start = input.current?.selectionStart ?? draft.length;
+    const end = input.current?.selectionEnd ?? start;
+    const next = draft.slice(0, start) + emoji + draft.slice(end);
+    if (next.length > 4000) return;
+    setDraft(next); setCaret(start + emoji.length); setMentionClosed(true);
+    requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(start + emoji.length, start + emoji.length); });
+  }
   const mention = !mentionClosed && draft.slice(0, caret).match(/(?:^|[\s(])@([^\s@]*)$/u);
   const suggestions = mention ? people.filter(person => person.id !== user.id && (person.username.includes(mention[1].toLowerCase()) || person.displayName.toLowerCase().includes(mention[1].toLowerCase()))).slice(0, 8) : [];
   useEffect(() => { let live = true; void api<{ users: User[] }>('/users').then(result => { if (live) setPeople(result.users); }).catch(() => {}); return () => { live = false; }; }, []);
@@ -132,7 +156,7 @@ export function Chat({ channel, user, compact = false, notify }: { channel: Chan
       })}
     </div>
     {newBelow && <button className="new-messages" onClick={() => { stick.current = true; scroll.current?.scrollTo({ top: scroll.current.scrollHeight, behavior: 'smooth' }); setNewBelow(false); }}>Новые сообщения <ArrowDown size={14} /></button>}
-    <form className="composer" onSubmit={send}>{suggestions.length > 0 && <div className="mention-menu" role="listbox" aria-label="Упомянуть участника">{suggestions.map((person, index) => <button type="button" role="option" aria-selected={index === mentionIndex % suggestions.length} key={person.id} onMouseDown={e => e.preventDefault()} onClick={() => chooseMention(person)}><Avatar name={person.displayName} /><span><strong>{person.displayName}</strong><small>@{person.username}</small></span></button>)}</div>}<textarea ref={input} aria-label={`Сообщение в ${channel.name}`} value={draft} onChange={e => { setDraft(e.target.value); setCaret(e.target.selectionStart); setMentionClosed(false); setMentionIndex(0); }} onSelect={e => setCaret(e.currentTarget.selectionStart)} placeholder={compact ? 'Написать в комнату…' : `Сообщение в #${channel.name}`} maxLength={4000} rows={1} onKeyDown={e => { if (suggestions.length && !(e.key === 'Enter' && e.shiftKey) && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(e.key) && !e.nativeEvent.isComposing) { e.preventDefault(); if (e.key === 'Escape') setMentionClosed(true); else if (e.key === 'ArrowDown') setMentionIndex(i => (i + 1) % suggestions.length); else if (e.key === 'ArrowUp') setMentionIndex(i => (i + suggestions.length - 1) % suggestions.length); else chooseMention(suggestions[mentionIndex % suggestions.length]); return; } if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(e); } }} /><button type="submit" disabled={busy || !draft.trim()} aria-label="Отправить сообщение"><ArrowUp size={20} /></button></form>
+    <form className="composer" onSubmit={send}>{suggestions.length > 0 && <div className="mention-menu" role="listbox" aria-label="Упомянуть участника">{suggestions.map((person, index) => <button type="button" role="option" aria-selected={index === mentionIndex % suggestions.length} key={person.id} onMouseDown={e => e.preventDefault()} onClick={() => chooseMention(person)}><Avatar name={person.displayName} /><span><strong>{person.displayName}</strong><small>@{person.username}</small></span></button>)}</div>}<textarea ref={input} aria-label={`Сообщение в ${channel.name}`} value={draft} onChange={e => { setDraft(e.target.value); setCaret(e.target.selectionStart); setMentionClosed(false); setMentionIndex(0); }} onSelect={e => setCaret(e.currentTarget.selectionStart)} placeholder={compact ? 'Написать в комнату…' : `Сообщение в #${channel.name}`} maxLength={4000} rows={1} onKeyDown={e => { if (suggestions.length && !(e.key === 'Enter' && e.shiftKey) && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(e.key) && !e.nativeEvent.isComposing) { e.preventDefault(); if (e.key === 'Escape') setMentionClosed(true); else if (e.key === 'ArrowDown') setMentionIndex(i => (i + 1) % suggestions.length); else if (e.key === 'ArrowUp') setMentionIndex(i => (i + suggestions.length - 1) % suggestions.length); else chooseMention(suggestions[mentionIndex % suggestions.length]); return; } if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(e); } }} /><div className="emoji-wrap" ref={emojiContainer}><button type="button" className={`emoji-toggle ${emojiOpen ? 'active' : ''}`} aria-label="Смайлики" title="Смайлики" aria-expanded={emojiOpen} onClick={() => { setEmojiOpen(open => !open); setMentionClosed(true); }}><Smile size={19} /></button>{emojiOpen && <div className="emoji-panel" role="dialog" aria-label="Выбор смайлика"><div className="emoji-title">Смайлики <span>Выберите настроение</span></div><div className="emoji-tabs" role="tablist" aria-label="Категории смайликов">{emojiGroups.map((group, index) => <button type="button" role="tab" aria-selected={index === emojiGroup} key={group.name} onClick={() => setEmojiGroup(index)}>{group.name}</button>)}</div><div className="emoji-grid">{emojiGroups[emojiGroup].items.map(emoji => <button type="button" key={emoji} title={emoji} aria-label={`Добавить ${emoji}`} onClick={() => insertEmoji(emoji)}>{emoji}</button>)}</div></div>}</div><button type="submit" disabled={busy || !draft.trim()} aria-label="Отправить сообщение"><ArrowUp size={20} /></button></form>
     <div className="composer-hint">{draft.length > 3500 ? `${draft.length} / 4000` : 'Enter — отправить · Shift + Enter — новая строка'}</div>
   </section>;
 }
