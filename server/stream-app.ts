@@ -33,7 +33,7 @@ export async function buildStreamApp(config: StreamConfig, media: StreamMedia = 
   }
   await app.register(cookie);
   await app.register(rateLimit, { max: 240, timeWindow: '1 minute' });
-  await app.register(helmet, { contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"], connectSrc: ["'self'", config.STREAM_LIVEKIT_URL, config.STREAM_LIVEKIT_URL.replace(/^ws/, 'http')], imgSrc: ["'self'", 'data:'], mediaSrc: ["'self'", 'blob:'], objectSrc: ["'none'"], frameAncestors: ["'none'"], formAction: ["'self'"], upgradeInsecureRequests: config.NODE_ENV === 'production' ? [] : null } }, crossOriginEmbedderPolicy: false, referrerPolicy: { policy: 'no-referrer' } });
+  await app.register(helmet, { contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"], connectSrc: ["'self'", config.STREAM_ORIGIN.replace(/^http/, 'ws'), config.STREAM_LIVEKIT_URL, config.STREAM_LIVEKIT_URL.replace(/^ws/, 'http')], imgSrc: ["'self'", 'data:'], mediaSrc: ["'self'", 'blob:'], objectSrc: ["'none'"], frameAncestors: ["'none'"], formAction: ["'self'"], upgradeInsecureRequests: config.NODE_ENV === 'production' ? [] : null } }, crossOriginEmbedderPolicy: false, referrerPolicy: { policy: 'no-referrer' } });
   await app.register(websocket, { options: { maxPayload: 1024, perMessageDeflate: false } });
   app.addHook('onRequest', async (req, reply) => {
     reply.header('X-Robots-Tag', 'noindex, nofollow').header('Permissions-Policy', 'camera=(), microphone=(), display-capture=(), geolocation=()');

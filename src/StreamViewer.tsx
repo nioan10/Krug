@@ -44,6 +44,16 @@ export function StreamViewer() {
   }, [id, watch, stream?.state]);
   useEffect(() => { for (const element of audio.current?.querySelectorAll('audio') ?? []) { element.volume = volume; element.muted = muted; } }, [volume, muted]);
   async function copy() { try { await navigator.clipboard.writeText(location.href); setCopied(true); } catch { setError('Скопируйте адрес эфира из адресной строки.'); } }
+  async function fullscreen() {
+    try {
+      if (player.current?.requestFullscreen) await player.current.requestFullscreen();
+      else {
+        const mobileVideo = video.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null;
+        if (mobileVideo?.webkitEnterFullscreen) mobileVideo.webkitEnterFullscreen();
+        else throw new Error('Fullscreen unavailable');
+      }
+    } catch { setError('Полный экран недоступен в этом браузере.'); }
+  }
   if (!id) return <main className="stream-landing"><div className="stream-wordmark"><Radio size={24} />Округ <span>/ эфиры</span></div><h1>Прямые эфиры</h1><p>Откройте ссылку, которую прислал автор трансляции.</p><p className="muted">Для просмотра и чата аккаунт не нужен.</p></main>;
   if (!stream) return <main className="stream-landing"><Radio size={32} /><h1>{error || 'Открываем эфир…'}</h1><button className="secondary" onClick={() => location.reload()}>Повторить</button></main>;
   return <main className="stream-page">
@@ -52,7 +62,7 @@ export function StreamViewer() {
       <div className="stream-player" ref={player}><video ref={video} autoPlay playsInline muted aria-label="Видео трансляции" /><div ref={audio} hidden />
         {(!watch || !hasVideo || connecting || stream.state !== 'live' || !stream.publishing) && <div className="stream-player-cover"><Radio size={38} /><h2>{stream.state === 'ended' ? 'Эфир завершён' : stream.state === 'starting' ? 'Автор готовится к эфиру' : connecting ? 'Подключаемся…' : watch ? 'Ждём изображение от автора' : 'Эфир идёт'}</h2>{stream.state === 'live' && !watch && <button className="primary" disabled={!guestReady} onClick={() => setWatch(true)}><Play size={18} />Смотреть эфир</button>}</div>}
         {audioBlocked && watch && <button className="stream-enable-audio primary" onClick={() => void roomRef.current?.startAudio().then(() => setAudioBlocked(false)).catch(() => setError('Браузер пока не разрешил звук. Повторите нажатие.'))}><Volume2 size={17} />Включить звук</button>}
-        <div className="stream-player-controls"><button className="icon-button" aria-label={muted ? 'Включить звук' : 'Выключить звук'} onClick={() => setMuted(!muted)}>{muted || volume === 0 ? <VolumeX size={19} /> : <Volume2 size={19} />}</button><input aria-label="Громкость эфира" type="range" min="0" max="1" step="0.01" value={volume} onChange={e => setVolume(Number(e.target.value))} /><span>{stream.quality === '720p60' ? '720p · 60 FPS' : '1080p · 60 FPS'}</span><button className="icon-button" aria-label="На весь экран" onClick={() => void player.current?.requestFullscreen().catch(() => setError('Полный экран недоступен в этом браузере.'))}><Maximize2 size={20} /></button></div>
+        <div className="stream-player-controls"><button className="icon-button" aria-label={muted ? 'Включить звук' : 'Выключить звук'} onClick={() => setMuted(!muted)}>{muted || volume === 0 ? <VolumeX size={19} /> : <Volume2 size={19} />}</button><input aria-label="Громкость эфира" type="range" min="0" max="1" step="0.01" value={volume} onChange={e => setVolume(Number(e.target.value))} /><span>{stream.quality === '720p60' ? '720p · 60 FPS' : '1080p · 60 FPS'}</span><button className="icon-button" aria-label="На весь экран" onClick={() => void fullscreen()}><Maximize2 size={20} /></button></div>
       </div>
       <div className="stream-details"><div><span className={`stream-status ${stream.state === 'live' ? 'live' : ''}`}><i />{stream.state === 'live' ? 'В ЭФИРЕ' : stream.state === 'starting' ? 'СКОРО НАЧАЛО' : 'ЗАВЕРШЁН'}</span><h1>{stream.title}</h1></div><div className="stream-detail-actions"><span><Users size={17} />{stream.viewers}</span><button className="secondary" onClick={() => void copy()}><Copy size={15} />{copied ? 'Скопировано' : 'Поделиться'}</button></div></div>
       {error && <p role="alert" className="stream-error">{error}</p>}
