@@ -34,6 +34,8 @@ async function member(app: App, admin: string, username = 'member') {
 
 test('images are private, persist with their messages and are deleted with them', async t => {
   const app = await buildApp(config()); t.after(() => app.close());
+  const policy = (await app.inject('/api/health')).headers['content-security-policy'] as string;
+  assert.match(policy, /(?:^|;)\s*img-src\s+[^;]*\bblob:/);
   const admin = await owner(app);
   const image = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
   const sent = await app.inject({ method: 'POST', url: '/api/channels/general/messages', headers: headers(admin), payload: { body: '', image } });

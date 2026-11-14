@@ -49,7 +49,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     contentSecurityPolicy: { directives: {
       defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"],
       connectSrc: ["'self'", config.LIVEKIT_URL, config.LIVEKIT_URL.replace(/^ws/, 'http'), ...(config.STREAM_ORIGIN ? [config.STREAM_ORIGIN, config.STREAM_ORIGIN.replace(/^http/, 'ws'), config.STREAM_LIVEKIT_URL, config.STREAM_LIVEKIT_URL.replace(/^ws/, 'http')] : [])],
-      imgSrc: ["'self'", 'data:'], mediaSrc: ["'self'", 'blob:'], workerSrc: ["'self'", 'blob:'],
+      imgSrc: ["'self'", 'data:', 'blob:'], mediaSrc: ["'self'", 'blob:'], workerSrc: ["'self'", 'blob:'],
       objectSrc: ["'none'"], frameAncestors: ["'none'"], formAction: ["'self'"],
       upgradeInsecureRequests: config.NODE_ENV === 'production' ? [] : null,
     } },
