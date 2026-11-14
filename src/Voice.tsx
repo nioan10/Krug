@@ -29,16 +29,26 @@ function VoiceStatus({ participant, deafened }: { participant: Participant; deaf
   const audioLabel = deafened === null ? 'Состояние звука неизвестно' : deafened ? 'Входящий звук выключен' : 'Входящий звук включён';
   return <div className="person-states"><span role="img" className={microphoneEnabled ? 'voice-state-on' : 'voice-state-off'} title={micLabel} aria-label={micLabel}>{microphoneEnabled ? <Mic size={15} /> : <MicOff size={15} />}</span><span role="img" className={deafened === null ? 'voice-state-unknown' : deafened ? 'voice-state-off' : 'voice-state-on'} title={audioLabel} aria-label={audioLabel}>{deafened ? <HeadphoneOff size={15} /> : <Headphones size={15} />}</span></div>;
 }
-function AfkBadge() { return <div className="afk-badge" aria-label="Отошёл"><span className="afk-orbit" aria-hidden="true">✦</span><Coffee size={13} /> АФК</div>; }
+function AfkBadge({ active }: { active: boolean }) {
+  const [shown, setShown] = useState(active);
+  useEffect(() => {
+    if (active) { setShown(true); return; }
+    const delay = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 700;
+    const timer = window.setTimeout(() => setShown(false), delay);
+    return () => window.clearTimeout(timer);
+  }, [active]);
+  if (!shown && !active) return null;
+  return <div className={`afk-badge ${active ? '' : 'afk-exiting'}`} aria-label="Отошёл" aria-hidden={!active}><span className="afk-orbit" aria-hidden="true">✦</span><Coffee size={13} /> АФК</div>;
+}
 function Person({ participant, onVolume, deafened, afk }: { participant: Participant; onVolume: () => void; deafened: boolean | null; afk: boolean }) {
   const speaking = useIsSpeaking(participant);
-  return <div className={`person-tile ${speaking ? 'speaking' : ''}`}>{afk && <AfkBadge />}<Avatar name={participant.name || participant.identity} size="large" /><span className="person-name">{participant.name || 'Участник'}{participant.isLocal && <small>вы</small>}</span><VoiceStatus participant={participant} deafened={deafened} /><button className="participant-volume icon-button" title={participant.isLocal ? 'Громкость микрофона' : `Громкость: ${participant.name || participant.identity}`} aria-label={participant.isLocal ? 'Громкость микрофона' : `Громкость: ${participant.name || participant.identity}`} onClick={onVolume}><Volume2 size={16} /></button>{speaking && !afk && <span className="speaking-label">Говорит</span>}</div>;
+  return <div className={`person-tile ${speaking ? 'speaking' : ''}`}><AfkBadge active={afk} /><Avatar name={participant.name || participant.identity} size="large" /><span className="person-name">{participant.name || 'Участник'}{participant.isLocal && <small>вы</small>}</span><VoiceStatus participant={participant} deafened={deafened} /><button className="participant-volume icon-button" title={participant.isLocal ? 'Громкость микрофона' : `Громкость: ${participant.name || participant.identity}`} aria-label={participant.isLocal ? 'Громкость микрофона' : `Громкость: ${participant.name || participant.identity}`} onClick={onVolume}><Volume2 size={16} /></button>{speaking && !afk && <span className="speaking-label">Говорит</span>}</div>;
 }
 function ParticipantTile({ participant, camera, onVolume, deafened, afk }: { participant: Participant; camera?: TrackReference; onVolume: () => void; deafened: boolean | null; afk: boolean }) {
   const muted = useIsMuted(camera ?? { participant, source: Track.Source.Camera });
   const speaking = useIsSpeaking(participant);
   if (!camera || !hasVisibleCamera(camera.publication, muted)) return <Person participant={participant} onVolume={onVolume} deafened={deafened} afk={afk} />;
-  return <div className={`camera-tile ${speaking ? 'speaking' : ''}`}><VideoTrack trackRef={camera} />{afk && <AfkBadge />}<span>{participant.name}{participant.isLocal ? ' · вы' : ''}</span><VoiceStatus participant={participant} deafened={deafened} /><button className="participant-volume icon-button" title={`Громкость: ${participant.name || participant.identity}`} aria-label={`Громкость: ${participant.name || participant.identity}`} onClick={onVolume}><Volume2 size={16} /></button>{speaking && !afk && <div className="speaking-label">Говорит</div>}</div>;
+  return <div className={`camera-tile ${speaking ? 'speaking' : ''}`}><VideoTrack trackRef={camera} /><AfkBadge active={afk} /><span>{participant.name}{participant.isLocal ? ' · вы' : ''}</span><VoiceStatus participant={participant} deafened={deafened} /><button className="participant-volume icon-button" title={`Громкость: ${participant.name || participant.identity}`} aria-label={`Громкость: ${participant.name || participant.identity}`} onClick={onVolume}><Volume2 size={16} /></button>{speaking && !afk && <div className="speaking-label">Говорит</div>}</div>;
 }
 function CallContent({ room, onLeave, notify, channelId, presence }: { room: Room; onLeave: () => void; notify: (message: string) => void; channelId: string; presence: VoiceOccupant[] }) {
   const participants = useParticipants();
