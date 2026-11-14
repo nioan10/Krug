@@ -5,7 +5,7 @@ import { subscribe } from './events';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { LiveKitRoom, TrackToggle, useParticipants, useTracks, VideoTrack, useIsSpeaking, useIsMuted, useConnectionState, StartAudio, type TrackReference } from '@livekit/components-react';
 import { Room, RoomEvent, ExternalE2EEKeyProvider, isE2EESupported, Track, ConnectionState, ParticipantEvent, LocalAudioTrack, type Participant, type RoomOptions } from 'livekit-client';
-import { Coffee, Headphones, HeadphoneOff, Mic, MicOff, MonitorUp, PhoneOff, Settings2, Video, Maximize2, Radio, Volume2 } from 'lucide-react';
+import { Coffee, Headphones, HeadphoneOff, Mic, MicOff, MonitorUp, PhoneOff, Settings2, Video, Radio, Volume2 } from 'lucide-react';
 import { Avatar, Modal } from './ui';
 import { IncomingAudio, MicrophoneToggle, VolumeSlider } from './AudioControls';
 import { loadAudioLevels, saveAudioLevels } from './audio-levels';
@@ -14,6 +14,7 @@ import { RestoreAudioOutput } from './AudioOutput';
 import { api, type Channel, type VoiceOccupant } from './api';
 import { DesktopShare } from './DesktopShare';
 import { hasVisibleCamera } from './camera-state';
+import { ScreenShareTile } from './ScreenShareTile';
 
 export type Call = { channel: Channel; token: string; url: string; e2ee?: { key: ArrayBuffer; roster: string } };
 const options: RoomOptions = {
@@ -118,7 +119,7 @@ function CallContent({ room, onLeave, notify, channelId, presence }: { room: Roo
     <IncomingAudio levels={levels} muted={deafened} />
     <div className="call-overline"><span className={`connection-label ${state === ConnectionState.Connected ? 'good' : ''}`}><span className="live-dot" />{state === ConnectionState.Connected ? 'Подключено' : state === ConnectionState.Reconnecting || state === ConnectionState.SignalReconnecting ? 'Восстанавливаем связь…' : 'Подключаемся…'}{state === ConnectionState.Connected && <span className="call-ping" title="Задержка до голосового сервера">{ping === null ? 'Пинг —' : `${ping} мс`}</span>}</span><span>{room.options.encryption ? '🔒 Сквозное шифрование · ' : ''}{participants.length} в комнате</span></div>
     <div className="call-stage">
-      {screens.map(track => <div className="screen-tile" key={track.publication.trackSid}><VideoTrack trackRef={track} /><div className="screen-caption"><MonitorUp size={15} /><span>Экран · {track.participant.name}</span><button className="icon-button" aria-label="На весь экран" onClick={e => void e.currentTarget.closest('.screen-tile')?.requestFullscreen().catch(() => notify('Полноэкранный режим недоступен.'))}><Maximize2 size={16} /></button></div></div>)}
+      {screens.map(track => <ScreenShareTile key={track.publication.trackSid} track={track} notify={notify} />)}
       <div className={`people-grid ${screens.length ? 'with-screen' : ''}`}>{participants.map(p => {
         const camera = cameras.find(t => t.participant.identity === p.identity);
         const audioState = p.isLocal ? deafened : presence.find(person => (person.identity ?? person.id) === p.identity)?.deafened ?? null;
