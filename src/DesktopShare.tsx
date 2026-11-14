@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { useRoomContext } from '@livekit/components-react';
 import { Track } from 'livekit-client';
 import { MonitorUp } from 'lucide-react';
-import { DesktopAudioBuffer } from './desktop-audio-buffer';
+import { acquireDesktopCapture, createDesktopAudio } from './desktop-capture';
 
-type DesktopBridge = {
+export type DesktopBridge = {
   startAudio(): Promise<boolean>;
   stopAudio(): Promise<void>;
   onAudio(callback: (data: Uint8Array) => void): () => void;
@@ -15,21 +15,6 @@ type DesktopBridge = {
 };
 export type DesktopUpdateStatus = { state: 'idle' | 'downloading' | 'ready' | 'queued' | 'installing' | 'error'; percent?: number };
 declare global { interface Window { krugDesktop?: DesktopBridge } }
-
-// Bounded buffer: a slow renderer drops old samples instead of building latency.
-function createAudio(bridge: DesktopBridge) {
-  const context = new AudioContext({ sampleRate: 44100, latencyHint: 'interactive' });
-  const destination = context.createMediaStreamDestination();
-  const node = context.createScriptProcessor(1024, 0, 2);
-  const buffer = new DesktopAudioBuffer();
-  const unsubscribe = bridge.onAudio(bytes => buffer.push(bytes));
-  node.onaudioprocess = event => {
-    const l = event.outputBuffer.getChannelData(0), r = event.outputBuffer.getChannelData(1);
-    buffer.pull(l, r);
-  };
-  node.connect(destination);
-  return { context, track: destination.stream.getAudioTracks()[0], close: () => { unsubscribe(); node.disconnect(); destination.stream.getTracks().forEach(t => t.stop()); void context.close(); } };
-}
 
 export function DesktopShare({ notify }: { notify: (message: string) => void }) {
   const room = useRoomContext();
@@ -46,19 +31,21 @@ export function DesktopShare({ notify }: { notify: (message: string) => void }) 
     if (!bridge) return;
     setBusy(true);
     let video: MediaStreamTrack | undefined;
-    let audio: ReturnType<typeof createAudio> | undefined;
+    let audio: ReturnType<typeof createDesktopAudio> | undefined;
+    let release: (() => void) | undefined;
     let removeEnded = () => {};
     let stopped = false;
     const stop = () => {
       if (stopped) return;
-      stopped = true; removeEnded(); void bridge.stopAudio().catch(() => {});
+      stopped = true; removeEnded(); if (release) void bridge.stopAudio().catch(() => {}).finally(release);
       if (video) { void room.localParticipant.unpublishTrack(video, true).catch(() => {}); video.stop(); }
       if (audio) { void room.localParticipant.unpublishTrack(audio.track, true).catch(() => {}); audio.close(); }
       if (active.current) setSharing(false);
     };
     cleanup.current = stop;
     try {
-      audio = createAudio(bridge);
+      release = acquireDesktopCapture();
+      audio = createDesktopAudio(bridge);
       // Request the picker synchronously in the click handler while user activation is present.
       const streamPromise = navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: false });
       void audio.context.resume().catch(() => {});
@@ -79,7 +66,7 @@ export function DesktopShare({ notify }: { notify: (message: string) => void }) 
       setSharing(true);
     } catch (error) {
       stop();
-      if (active.current && !(error instanceof DOMException && ['NotAllowedError', 'AbortError'].includes(error.name))) notify('Не удалось начать демонстрацию или захват звука приложения. Попробуйте ещё раз.');
+      if (active.current && !(error instanceof DOMException && ['NotAllowedError', 'AbortError'].includes(error.name))) notify(error instanceof Error ? error.message : 'Не удалось начать демонстрацию или захват звука приложения. Попробуйте ещё раз.');
     } finally { if (active.current) setBusy(false); }
   }
   return <button disabled={busy} data-lk-enabled={sharing} aria-label="Демонстрация экрана" title="Демонстрация экрана" onClick={() => void toggle()}><MonitorUp size={21} /><span>{sharing ? 'Остановить' : 'Поделиться'}</span></button>;

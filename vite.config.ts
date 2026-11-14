@@ -13,5 +13,5 @@ export default defineConfig({
     host: '127.0.0.1', port: 5173, strictPort: true,
     proxy: { '/api': { target: 'http://127.0.0.1:3000', ws: true } },
   },
-  build: { sourcemap: false, chunkSizeWarningLimit: 1100 },
+  build: { sourcemap: false, chunkSizeWarningLimit: 1100, rolldownOptions: { input: { main: 'index.html', stream: 'stream.html' } } },
 });
