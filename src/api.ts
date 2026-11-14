@@ -4,7 +4,7 @@ export type Channel = { id: string; name: string; kind: 'text' | 'voice'; descri
 export type Message = { id: number; channelId: string; body: string; createdAt: number; user: User; image?: boolean };
 export type Invite = { id: string; expiresAt: number; usedAt: number | null; createdAt: number; revokedAt: number | null; usedBy: string | null; usedByUsername: string | null; usedByName: string | null; usedByDisabledAt: number | null };
 export type Member = User & { createdAt: number; disabledAt: number | null };
-export type VoiceOccupant = User & { microphoneEnabled: boolean; deafened: boolean | null; afk?: boolean };
+export type VoiceOccupant = User & { identity?: string; microphoneEnabled: boolean; deafened: boolean | null; afk?: boolean };
 export type VoicePresence = { rooms: Record<string, VoiceOccupant[]>; available: boolean };
 export class HttpError extends Error { constructor(public status: number, message: string) { super(message); } }
 export async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> {

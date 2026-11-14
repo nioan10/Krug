@@ -63,6 +63,35 @@ test('revoking a member closes their active broadcast and denies future control'
   assert.equal((await q.control(`/${created.stream.id}/heartbeat`, {}, q.member)).statusCode, 401);
 });
 
+test('a broadcast belongs to its publishing session and ended rooms remain subject to stale-token cleanup', async t => {
+  const q = await setup(t);
+  const second = await q.app.inject({ method: 'POST', url: '/api/auth/login', headers: { origin }, payload: { username: 'owner', password: 'Long-test-password-only-123' } });
+  const otherSession = cookieOf(second);
+  const first = await q.create(), otherStream = await q.create(q.member);
+  assert.equal((await q.control(`/${first.stream.id}/heartbeat`, {}, otherSession)).statusCode, 403);
+  const sessions = (await q.app.inject({ url: '/api/sessions', headers: { origin, cookie: otherSession } })).json().sessions;
+  const original = sessions.find((s: { current: number }) => !s.current);
+  assert.equal((await q.app.inject({ method: 'DELETE', url: `/api/sessions/${original.id}`, headers: { origin, cookie: otherSession } })).statusCode, 200);
+  assert.equal(q.store.require(first.stream.id).state, 'ended');
+  assert.notEqual(q.store.require(otherStream.stream.id).state, 'ended');
+  const recreated = new Set([first.stream.id, otherStream.stream.id]);
+  q.media.prune = async active => { for (const id of recreated) if (!active().includes(id)) recreated.delete(id); };
+  await sweepStreams(q.store, q.media);
+  assert.deepEqual([...recreated], [otherStream.stream.id]);
+  recreated.add(first.stream.id);
+  await sweepStreams(q.store, q.media);
+  assert.deepEqual([...recreated], [otherStream.stream.id]);
+  let startedDuringRequest = '';
+  q.media.prune = async active => {
+    await Promise.resolve();
+    startedDuringRequest = q.store.create('late-owner', 'Started during cleanup', '720p60').id;
+    recreated.add(startedDuringRequest);
+    for (const id of recreated) if (!active().includes(id)) recreated.delete(id);
+  };
+  await sweepStreams(q.store, q.media);
+  assert.ok(recreated.has(startedDuringRequest), 'cleanup must preserve a stream started while listing media rooms');
+});
+
 test('public API has no account routes and leaks no owner identifiers, session data or real names', async t => {
   const q = await setup(t); const { stream } = await q.create();
   for (const path of ['/api/me', '/api/channels', '/api/users', '/api/broadcasts']) assert.equal((await q.pub.inject(path)).statusCode, 404);

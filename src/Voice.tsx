@@ -1,3 +1,4 @@
+import { participantUserId } from './participant-user';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { LiveKitRoom, TrackToggle, useParticipants, useTracks, VideoTrack, useIsSpeaking, useIsMuted, useConnectionState, StartAudio, type TrackReference } from '@livekit/components-react';
 import { Room, Track, ConnectionState, ParticipantEvent, LocalAudioTrack, type Participant, type RoomOptions } from 'livekit-client';
@@ -42,7 +43,7 @@ function AfkBadge({ active }: { active: boolean }) {
 }
 function Person({ participant, onVolume, deafened, afk }: { participant: Participant; onVolume: () => void; deafened: boolean | null; afk: boolean }) {
   const speaking = useIsSpeaking(participant);
-  return <div className={`person-tile ${speaking ? 'speaking' : ''}`}><AfkBadge active={afk} /><Avatar name={participant.name || participant.identity} userId={participant.identity} size="large" /><span className="person-name">{participant.name || 'Участник'}{participant.isLocal && <small>вы</small>}</span><VoiceStatus participant={participant} deafened={deafened} /><button className="participant-volume icon-button" title={participant.isLocal ? 'Громкость микрофона' : `Громкость: ${participant.name || participant.identity}`} aria-label={participant.isLocal ? 'Громкость микрофона' : `Громкость: ${participant.name || participant.identity}`} onClick={onVolume}><Volume2 size={16} /></button>{speaking && !afk && <span className="speaking-label">Говорит</span>}</div>;
+  return <div className={`person-tile ${speaking ? 'speaking' : ''}`}><AfkBadge active={afk} /><Avatar name={participant.name || participant.identity} userId={participantUserId(participant)} size="large" /><span className="person-name">{participant.name || 'Участник'}{participant.isLocal && <small>вы</small>}</span><VoiceStatus participant={participant} deafened={deafened} /><button className="participant-volume icon-button" title={participant.isLocal ? 'Громкость микрофона' : `Громкость: ${participant.name || participant.identity}`} aria-label={participant.isLocal ? 'Громкость микрофона' : `Громкость: ${participant.name || participant.identity}`} onClick={onVolume}><Volume2 size={16} /></button>{speaking && !afk && <span className="speaking-label">Говорит</span>}</div>;
 }
 function ParticipantTile({ participant, camera, onVolume, deafened, afk }: { participant: Participant; camera?: TrackReference; onVolume: () => void; deafened: boolean | null; afk: boolean }) {
   const muted = useIsMuted(camera ?? { participant, source: Track.Source.Camera });
@@ -104,8 +105,8 @@ function CallContent({ room, onLeave, notify, channelId, presence }: { room: Roo
   const [volumeTarget, setVolumeTarget] = useState<string | null>(null);
   const closeVolume = useCallback(() => setVolumeTarget(null), []);
   useEffect(() => { saveAudioLevels(levels); }, [levels]);
-  const target = participants.find(p => p.identity === volumeTarget);
-  function openVolume(participant: Participant) { if (participant.isLocal) setDevices(true); else setVolumeTarget(participant.identity); }
+  const target = participants.find(p => participantUserId(p) === volumeTarget);
+  function openVolume(participant: Participant) { if (participant.isLocal) setDevices(true); else setVolumeTarget(participantUserId(participant)); }
   const closeDevices = useCallback(() => setDevices(false), []);
   const screens = tracks.filter(t => t.source === Track.Source.ScreenShare);
   const cameras = tracks.filter(t => t.source === Track.Source.Camera);
@@ -117,8 +118,8 @@ function CallContent({ room, onLeave, notify, channelId, presence }: { room: Roo
       {screens.map(track => <div className="screen-tile" key={track.publication.trackSid}><VideoTrack trackRef={track} /><div className="screen-caption"><MonitorUp size={15} /><span>Экран · {track.participant.name}</span><button className="icon-button" aria-label="На весь экран" onClick={e => void e.currentTarget.closest('.screen-tile')?.requestFullscreen().catch(() => notify('Полноэкранный режим недоступен.'))}><Maximize2 size={16} /></button></div></div>)}
       <div className={`people-grid ${screens.length ? 'with-screen' : ''}`}>{participants.map(p => {
         const camera = cameras.find(t => t.participant.identity === p.identity);
-        const audioState = p.isLocal ? deafened : presence.find(person => person.id === p.identity)?.deafened ?? null;
-        return <ParticipantTile participant={p} camera={camera} key={p.identity} onVolume={() => openVolume(p)} deafened={audioState} afk={p.isLocal ? afk : Boolean(presence.find(person => person.id === p.identity)?.afk)} />;
+        const audioState = p.isLocal ? deafened : presence.find(person => (person.identity ?? person.id) === p.identity)?.deafened ?? null;
+        return <ParticipantTile participant={p} camera={camera} key={p.identity} onVolume={() => openVolume(p)} deafened={audioState} afk={p.isLocal ? afk : Boolean(presence.find(person => (person.identity ?? person.id) === p.identity)?.afk)} />;
       })}</div>
       {participants.length === 1 && !screens.length && <div className="waiting-note"><Radio size={18} /><span>В комнате пока только вы.</span></div>}
     </div>

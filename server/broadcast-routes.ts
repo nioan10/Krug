@@ -5,9 +5,9 @@ import { ApiError } from './security.ts';
 import { openStreamStore, publicBroadcast } from './stream-store.ts';
 import { createStreamMedia, streamToken, sweepStreams, type StreamMedia } from './stream-media.ts';
 
-export async function registerBroadcasts(app: FastifyInstance, config: Config, auth: (req: FastifyRequest) => Promise<void>, suppliedMedia?: StreamMedia) {
+export async function registerBroadcasts(app: FastifyInstance, config: Config, auth: (req: FastifyRequest) => Promise<void>, suppliedMedia?: StreamMedia, sessionActive?: (hash: string) => boolean) {
   app.get('/api/broadcasts/config', { preHandler: auth }, async () => ({ enabled: Boolean(config.STREAM_ORIGIN), origin: config.STREAM_ORIGIN }));
-  if (!config.STREAM_ORIGIN) return async (_userId: string) => true;
+  if (!config.STREAM_ORIGIN) return async (_userId: string, _hash?: string) => true;
   const store = openStreamStore(config.STREAM_DATABASE_PATH);
   const media = suppliedMedia ?? createStreamMedia(config);
   const idOf = (req: FastifyRequest) => z.object({ id: z.string().regex(/^[a-f0-9]{32}$/) }).parse(req.params).id;
@@ -16,14 +16,14 @@ export async function registerBroadcasts(app: FastifyInstance, config: Config, a
     if (stream.ownerId !== req.user!.id) throw new ApiError(404, 'Эфир не найден.');
     return stream;
   };
-  const active = (req: FastifyRequest) => { const stream = owned(req); if (stream.state === 'ended' || stream.leaseUntil <= Date.now()) throw new ApiError(409, 'Эфир уже завершён.'); return stream; };
+  const active = (req: FastifyRequest) => { const stream = owned(req); if (stream.ownerSession && stream.ownerSession !== req.sessionHash) throw new ApiError(403, 'Эфир запущен с другого устройства.'); if (stream.state === 'ended' || stream.leaseUntil <= Date.now()) throw new ApiError(409, 'Эфир уже завершён.'); return stream; };
   const view = (stream: ReturnType<typeof owned>) => ({ ...publicBroadcast(stream), url: `${config.STREAM_ORIGIN}/s/${stream.id}` });
   app.get('/api/broadcasts', { preHandler: auth }, async req => { store.expire(); return { streams: store.mine(req.user!.id).map(view) }; });
   app.post('/api/broadcasts', { preHandler: auth, config: { rateLimit: { max: 6, timeWindow: '1 minute' } } }, async (req, reply) => {
     const input = z.object({ title: z.string().trim().min(1).max(100), quality: z.enum(['720p60', '1080p60']) }).parse(req.body);
     await sweepStreams(store, media);
     await auth(req);
-    const stream = store.create(req.user!.id, input.title, input.quality);
+    const stream = store.create(req.user!.id, input.title, input.quality, req.sessionHash!);
     try { await media.create(stream.id); }
     catch { store.end(stream.id); throw new ApiError(503, 'Медиасервер недоступен. Попробуйте позже.'); }
     try {
@@ -53,11 +53,20 @@ export async function registerBroadcasts(app: FastifyInstance, config: Config, a
     const stream = owned(req); const { guestId } = z.object({ guestId: z.string().regex(/^guest-[a-f0-9]{16}$/) }).parse(req.body);
     store.ban(stream.id, guestId); return { ok: true };
   });
+  let sweeping: Promise<void> | undefined;
+  function sweepSessions() {
+    if (sweeping) return sweeping;
+    for (const stream of store.active()) if (stream.ownerSession && sessionActive && !sessionActive(stream.ownerSession)) store.end(stream.id);
+    sweeping = sweepStreams(store, media).then(() => {}).catch(() => {}).finally(() => { sweeping = undefined; });
+    return sweeping;
+  }
+  const timer = setInterval(() => void sweepSessions(), 3000); timer.unref();
+  app.addHook('preClose', async () => { clearInterval(timer); await sweeping; });
   app.addHook('onClose', async () => { store.db.close(); });
-  return async (userId: string) => {
-    for (const stream of store.active().filter(item => item.ownerId === userId)) store.end(stream.id);
-    if (!store.pendingClose().some(item => item.ownerId === userId)) return true;
+  return async (userId: string, sessionHash?: string) => {
+    for (const stream of store.active().filter(item => item.ownerId === userId && (!sessionHash || !item.ownerSession || item.ownerSession === sessionHash))) store.end(stream.id);
+    if (!store.pendingClose().some(item => item.ownerId === userId && (!sessionHash || !item.ownerSession || item.ownerSession === sessionHash))) return true;
     await sweepStreams(store, media);
-    return !store.pendingClose().some(item => item.ownerId === userId);
+    return !store.pendingClose().some(item => item.ownerId === userId && (!sessionHash || !item.ownerSession || item.ownerSession === sessionHash));
   };
 }

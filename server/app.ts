@@ -20,6 +20,7 @@ import { mentionNames } from './mentions.ts';
 import { decodeImage } from './image-attachment.ts';
 import { registerBroadcasts } from './broadcast-routes.ts';
 import type { StreamMedia } from './stream-media.ts';
+import { sessionStore } from './sessions.ts';
 
 declare module 'fastify' { interface FastifyRequest { user: User | null; sessionHash: string | null } }
 const credentials = z.object({ username: z.string().trim().toLowerCase().regex(/^[a-z0-9_]{3,24}$/), password: z.string().min(12).max(128) });
@@ -33,9 +34,10 @@ export async function buildApp(config: Config, media: MediaService = createMedia
   });
   const store = openStore(config);
   const { db } = store;
+  const sessions = sessionStore(db);
   const sockets = new Map<WebSocket, { user: User; hash: string; alive: boolean }>();
   const attempts = new Map<string, { count: number; expires: number }>();
-  const updateTokens = new Map<string, { expires: number; manualAware: boolean }>();
+  const updateTokens = new Map<string, { expires: number; manualAware: boolean; sessionHash: string }>();
   const sessionTransfers = createSessionTransfers();
   const voiceAudioStates = new Map<string, { channelId: string; deafened: boolean; afk: boolean; expiresAt: number }>();
   const deletingChannels = new Set<string>();
@@ -78,13 +80,15 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     const user = hash ? store.sessionUser(hash) : undefined;
     if (!user) throw new ApiError(401, 'Войдите в свой аккаунт.');
     req.user = user; req.sessionHash = hash;
+    sessions.touch(hash);
   };
   const admin = async (req: FastifyRequest) => { await auth(req); if (req.user!.role !== 'admin') throw new ApiError(403, 'Это действие доступно владельцу.'); };
-  const revokeBroadcasts = await registerBroadcasts(app, config, auth, streamMedia);
-  const createSession = (user: User, reply: FastifyReply) => {
+  const revokeBroadcasts = await registerBroadcasts(app, config, auth, streamMedia, sessions.active);
+  const createSession = (user: User, reply: FastifyReply, req: FastifyRequest) => {
     const token = newSecret();
     const created = db.prepare('INSERT INTO sessions (hash,userId,expiresAt) SELECT ?,id,? FROM users WHERE id = ? AND disabledAt IS NULL').run(digest(token), Date.now() + 7 * DAY, user.id);
     if (!created.changes) throw new ApiError(401, 'Вход недоступен.');
+    sessions.add(digest(token), req.headers['user-agent']);
     reply.setCookie(sessionCookie, token, cookieOptions);
     return { user };
   };
@@ -111,7 +115,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
   };
   const requireChannel = (id: string) => { const channel = store.channel(id); if (!channel) throw new ApiError(404, 'Канал не найден.'); if (deletingChannels.has(id)) throw new ApiError(409, 'Канал удаляется.'); return channel; };
   const authRate = { rateLimit: { max: 12, timeWindow: '15 minutes' } };
-  let voicePresence: { rooms: Record<string, (User & { microphoneEnabled: boolean; deafened: boolean | null; afk: boolean })[]>; available: boolean } = { rooms: {}, available: false };
+  let voicePresence: { rooms: Record<string, (User & { identity?: string; microphoneEnabled: boolean; deafened: boolean | null; afk: boolean })[]>; available: boolean } = { rooms: {}, available: false };
   let presenceRequest: Promise<void> | undefined;
   let presenceCheckedAt = 0;
   let closing = false;
@@ -125,12 +129,14 @@ export async function buildApp(config: Config, media: MediaService = createMedia
         const occupants = await media.participants(store.channels().filter(channel => channel.kind === 'voice').map(channel => channel.id));
         const rooms = Object.fromEntries(store.channels().filter(channel => channel.kind === 'voice' && !deletingChannels.has(channel.id)).map(channel => [channel.id,
           [...new Map((occupants[channel.id] ?? []).map(person => [person.identity, person])).values()].sort((a, b) => a.identity.localeCompare(b.identity)).flatMap(person => {
-            const user = store.publicUser(person.identity);
-            if (db.prepare('SELECT 1 FROM blocked_voice_identities WHERE userId = ?').get(person.identity)) return [];
+            const lease = sessions.voice(person.identity);
+            const userId = lease?.userId ?? person.identity;
+            const user = store.publicUser(userId);
+            if ((lease && !sessions.active(lease.sessionHash)) || db.prepare('SELECT 1 FROM blocked_voice_identities WHERE userId = ?').get(userId)) return [];
             const audioState = voiceAudioStates.get(person.identity);
             const deafened = audioState && audioState.channelId === channel.id && audioState.expiresAt > Date.now() ? audioState.deafened : null;
             const afk = Boolean(audioState && audioState.channelId === channel.id && audioState.expiresAt > Date.now() && audioState.afk);
-            return user ? [{ ...user, microphoneEnabled: person.microphoneEnabled, deafened, afk }] : [];
+            return user ? [{ ...user, ...(lease ? { identity: person.identity } : {}), microphoneEnabled: person.microphoneEnabled, deafened, afk }] : [];
           }),
         ]));
         next = { rooms, available: true };
@@ -152,13 +158,15 @@ export async function buildApp(config: Config, media: MediaService = createMedia
   function enforceBlockedAccess() {
     if (accessSweep) return accessSweep;
     const blocked = db.prepare('SELECT userId, needsStream FROM blocked_voice_identities').all() as { userId: string; needsStream: number }[];
-    if (!blocked.length) return Promise.resolve(true);
     accessSweep = (async () => {
       let ok = true;
       try {
         const rooms = await media.participants(store.channels().filter(channel => channel.kind === 'voice').map(channel => channel.id));
         const blockedIds = new Set(blocked.map(row => row.userId));
-        const removals = Object.entries(rooms).flatMap(([room, occupants]) => occupants.filter(person => blockedIds.has(person.identity)).map(person => media.removeParticipant(room, person.identity)));
+        const removals = Object.entries(rooms).flatMap(([room, occupants]) => occupants.filter(person => {
+          const lease = sessions.voice(person.identity);
+          return blockedIds.has(lease?.userId ?? person.identity) || blockedIds.has(`legacy:${person.identity}`) || (lease ? !sessions.active(lease.sessionHash) : person.identity.startsWith('session-'));
+        }).map(person => media.removeParticipant(person.room ?? room, person.identity)));
         if ((await Promise.allSettled(removals)).some(result => result.status === 'rejected')) ok = false;
       } catch { ok = false; }
       for (const row of blocked.filter(item => item.needsStream)) {
@@ -185,6 +193,31 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     return { ok: true, disconnected };
   }
 
+  async function revokeSessions(userId: string, hashes: string[]) {
+    const selected = new Set(hashes);
+    if (!selected.size) return { ok: true, disconnected: true };
+    for (const hash of selected) db.prepare('DELETE FROM sessions WHERE hash=? AND userId=?').run(hash, userId);
+    for (const [socket, state] of sockets) if (selected.has(state.hash)) socket.close(1008, 'Session revoked');
+    // Also remove legacy connections, which did not carry a session identity.
+    db.prepare('INSERT OR IGNORE INTO blocked_voice_identities (userId,blockedAt,needsStream) VALUES (?, ?, 0)').run(`legacy:${userId}`, Date.now());
+    if (accessSweep) await accessSweep;
+    let disconnected = await enforceBlockedAccess();
+    for (const hash of selected) { try { if (!await revokeBroadcasts(userId, hash)) disconnected = false; } catch { disconnected = false; } }
+    presence();
+    return { ok: true, disconnected };
+  }
+
+  app.get('/api/sessions', { preHandler: auth }, async req => ({ sessions: sessions.list(req.user!.id, req.sessionHash!) }));
+  app.delete('/api/sessions/others', { preHandler: auth }, async req => {
+    const rows = db.prepare('SELECT hash FROM sessions WHERE userId=? AND hash!=?').all(req.user!.id, req.sessionHash!) as { hash: string }[];
+    return revokeSessions(req.user!.id, rows.map(row => row.hash));
+  });
+  app.delete('/api/sessions/:id', { preHandler: auth }, async req => {
+    const selected = sessions.find(req.user!.id, channelId(req));
+    if (!selected) throw new ApiError(404, 'Сессия не найдена.');
+    return revokeSessions(req.user!.id, [selected.hash]);
+  });
+
   app.get('/api/health', async () => ({ status: 'ok' }));
   app.post('/api/auth/register', { config: authRate }, async (req, reply) => {
     const input = credentials.extend({ displayName: z.string().trim().min(1).max(32), invite: z.string().min(32).max(128) }).parse(req.body);
@@ -202,7 +235,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
       if (!used.changes) throw new ApiError(400, 'Приглашение уже использовано, отозвано или истекло.');
       db.exec('COMMIT');
     } catch (error) { db.exec('ROLLBACK'); throw error; }
-    return reply.code(201).send(createSession(user, reply));
+    return reply.code(201).send(createSession(user, reply, req));
   });
   app.post('/api/auth/login', { config: authRate }, async (req, reply) => {
     const input = credentials.parse(req.body);
@@ -216,13 +249,12 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     const matches = await verifyPassword(input.password, user?.password ?? dummy);
     if (!user || !matches) throw new ApiError(401, 'Неверный логин или пароль.');
     attempts.delete(key);
-    return createSession(store.publicUser(user.id)!, reply);
+    return createSession(store.publicUser(user.id)!, reply, req);
   });
   app.post('/api/auth/logout', { preHandler: auth }, async (req, reply) => {
-    db.prepare('DELETE FROM sessions WHERE hash = ?').run(req.sessionHash!);
-    for (const [socket, state] of sockets) if (state.hash === req.sessionHash) socket.close(1008, 'Logged out');
+    const result = await revokeSessions(req.user!.id, [req.sessionHash!]);
     reply.clearCookie(sessionCookie, { path: '/', secure: cookieOptions.secure, sameSite: 'strict' });
-    return { ok: true };
+    return result;
   });
   app.post('/api/desktop-migration/issue', { preHandler: auth, config: authRate }, async req => {
     try { return { token: sessionTransfers.issue(req.sessionHash!) }; }
@@ -235,7 +267,8 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     const session = source ? db.prepare('SELECT expiresAt FROM sessions WHERE hash = ? AND expiresAt > ?').get(source, Date.now()) as { expiresAt: number } | undefined : undefined;
     if (!user || !session) throw new ApiError(401, 'Перенос сессии недоступен.');
     const newToken = newSecret();
-    db.prepare('INSERT INTO sessions VALUES (?, ?, ?)').run(digest(newToken), user.id, session.expiresAt);
+    db.prepare('INSERT INTO sessions (hash,userId,expiresAt) VALUES (?, ?, ?)').run(digest(newToken), user.id, session.expiresAt);
+    sessions.add(digest(newToken), req.headers['user-agent']);
     reply.setCookie(sessionCookie, newToken, { ...cookieOptions, maxAge: Math.max(0, Math.floor((session.expiresAt - Date.now()) / 1000)) });
     return { user };
   });
@@ -244,9 +277,10 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     const row = db.prepare('SELECT password FROM users WHERE id = ?').get(req.user!.id) as { password: string };
     if (!await verifyPassword(input.currentPassword, row.password)) throw new ApiError(400, 'Текущий пароль неверен.');
     const hashed = await hashPassword(input.password);
+    await auth(req);
     db.prepare('UPDATE users SET password = ? WHERE id = ?').run(hashed, req.user!.id);
-    db.prepare('DELETE FROM sessions WHERE userId = ?').run(req.user!.id);
-    for (const [socket, state] of sockets) if (state.user.id === req.user!.id) socket.close(1008, 'Password changed');
+    const rows = db.prepare('SELECT hash FROM sessions WHERE userId=?').all(req.user!.id) as { hash: string }[];
+    await revokeSessions(req.user!.id, rows.map(row => row.hash));
     reply.clearCookie(sessionCookie, { path: '/' });
     return { ok: true };
   });
@@ -333,14 +367,14 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     const now = Date.now();
     for (const [token, state] of updateTokens) if (state.expires <= now) updateTokens.delete(token);
     if (updateTokens.size >= 1000) throw new ApiError(429, 'Повторите попытку позже.');
-    const token = newSecret(); updateTokens.set(digest(token), { expires: now + 10 * 60 * 1000, manualAware: req.headers['x-krug-desktop-capability'] === 'manual-v1' });
+    const token = newSecret(); updateTokens.set(digest(token), { expires: now + 10 * 60 * 1000, manualAware: req.headers['x-krug-desktop-capability'] === 'manual-v1', sessionHash: req.sessionHash! });
     return { token };
   });
   app.get('/api/desktop-updates/:file', async (req, reply) => {
     const header = req.headers.authorization || '';
     const token = header.startsWith('Bearer ') ? header.slice(7) : '';
     const access = token ? updateTokens.get(digest(token)) : undefined;
-    if (!access || access.expires <= Date.now()) throw new ApiError(401, 'Обновление недоступно.');
+    if (!access || access.expires <= Date.now() || !sessions.active(access.sessionHash)) throw new ApiError(401, 'Обновление недоступно.');
     const { file } = z.object({ file: z.string() }).parse(req.params);
     if (file !== 'latest.yml' && !/^Krug-Setup-\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\.exe$/.test(file)) throw new ApiError(404, 'Обновление не найдено.');
     // Old clients install automatically. Never advertise an update to them;
@@ -372,10 +406,13 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     const channel = requireChannel(id);
     if (channel.kind !== 'voice') throw new ApiError(400, 'Это текстовый канал.');
     voiceAudioStates.set(req.user!.id, { channelId: id, deafened, afk, expiresAt: Date.now() + 30_000 });
+    voiceAudioStates.set(sessions.identity(req.sessionHash!, req.user!.id), { channelId: id, deafened, afk, expiresAt: Date.now() + 30_000 });
     const occupants = voicePresence.rooms[id];
-    const current = occupants?.find(person => person.id === req.user!.id);
+    const identity = sessions.identity(req.sessionHash!, req.user!.id);
+    const belongs = (person: { identity?: string; id: string }) => person.identity ? person.identity === identity : person.id === req.user!.id;
+    const current = occupants?.find(belongs);
     if (current && (current.afk !== afk || current.deafened !== deafened)) {
-      voicePresence = { ...voicePresence, rooms: { ...voicePresence.rooms, [id]: occupants.map(person => person.id === req.user!.id ? { ...person, deafened, afk } : person) } };
+      voicePresence = { ...voicePresence, rooms: { ...voicePresence.rooms, [id]: occupants.map(person => belongs(person) ? { ...person, deafened, afk } : person) } };
       broadcast({ type: 'voice-presence', ...voicePresence });
     }
     void refreshVoicePresence();
@@ -472,8 +509,10 @@ export async function buildApp(config: Config, media: MediaService = createMedia
   app.post('/api/channels/:id/voice-token', { preHandler: auth, config: { rateLimit: { max: 15, timeWindow: '1 minute' } } }, async req => {
     const channel = requireChannel(channelId(req));
     if (channel.kind !== 'voice') throw new ApiError(400, 'Это текстовый канал.');
-    const token = new AccessToken(config.LIVEKIT_API_KEY, config.LIVEKIT_API_SECRET, { identity: req.user!.id, name: req.user!.displayName, ttl: '2m' });
-    token.addGrant({ roomJoin: true, room: channel.id, canPublish: true, canSubscribe: true, canPublishData: false, canUpdateOwnMetadata: false });
+    const identity = sessions.identity(req.sessionHash!, req.user!.id);
+    const roomName = channel.id;
+    const token = new AccessToken(config.LIVEKIT_API_KEY, config.LIVEKIT_API_SECRET, { identity, name: req.user!.displayName, metadata: JSON.stringify({ userId: req.user!.id }), ttl: '2m' });
+    token.addGrant({ roomJoin: true, room: roomName, canPublish: true, canSubscribe: true, canPublishData: false, canUpdateOwnMetadata: false });
     const signed = await token.toJwt();
     await auth(req);
     return { token: signed, url: config.LIVEKIT_URL };

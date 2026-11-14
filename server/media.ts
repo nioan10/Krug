@@ -1,7 +1,7 @@
 import { RoomServiceClient, ServerError, TrackSource, type ParticipantInfo } from 'livekit-server-sdk';
 import type { Config } from './config.ts';
 
-export type VoiceOccupant = { identity: string; microphoneEnabled: boolean };
+export type VoiceOccupant = { identity: string; microphoneEnabled: boolean; room?: string };
 export function voiceOccupant(participant: Pick<ParticipantInfo, 'identity' | 'tracks'>): VoiceOccupant {
   return {
     identity: participant.identity,

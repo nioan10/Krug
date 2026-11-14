@@ -8,6 +8,7 @@ export interface StreamMedia {
   create(id: string): Promise<void>;
   close(id: string): Promise<void>;
   inspect(id: string, publisherId: string): Promise<{ publishing: boolean; viewers: number }>;
+  prune?(activeRoomIds: () => string[]): Promise<void>;
 }
 export function createStreamMedia(config: StreamConfig): StreamMedia {
   const client = new RoomServiceClient(config.STREAM_LIVEKIT_URL.replace(/^ws/, 'http'), config.STREAM_LIVEKIT_API_KEY, config.STREAM_LIVEKIT_API_SECRET, { requestTimeout: 5 });
@@ -15,6 +16,15 @@ export function createStreamMedia(config: StreamConfig): StreamMedia {
   return {
     async create(id) { await client.createRoom({ name: id, maxParticipants: 16, emptyTimeout: 120, departureTimeout: 30 }); },
     async close(id) { try { await client.deleteRoom(id); } catch (error) { if (!missing(error)) throw error; } },
+    async prune(activeRoomIds) {
+      const rooms = await client.listRooms();
+      // A stream can start while the media request is in flight. Read the store
+      // afterwards so that its newly created room is never treated as abandoned.
+      const active = new Set(activeRoomIds());
+      for (const room of rooms) if (!active.has(room.name)) {
+        try { await client.deleteRoom(room.name); } catch (error) { if (!missing(error)) throw error; }
+      }
+    },
     async inspect(id, publisherId) {
       try {
         const participants = await client.listParticipants(id);
@@ -34,4 +44,7 @@ export async function sweepStreams(store: StreamStore, media: StreamMedia) {
   for (const stream of store.pendingClose()) {
     try { await media.close(stream.id); store.db.prepare('UPDATE broadcasts SET mediaClosed=1 WHERE id=?').run(stream.id); } catch { /* Retry on the next sweep; no new access tokens are issued. */ }
   }
+  // A previously issued/reconnected JWT can recreate an ended room. The public
+  // media service is dedicated to streams; remove rooms absent from its store.
+  await media.prune?.(() => store.active().map(stream => stream.id));
 }

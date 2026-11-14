@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { ApiError, digest, newSecret } from './security.ts';
 
-export type Broadcast = { id: string; ownerId: string; publisherId: string; title: string; quality: '720p60' | '1080p60'; state: 'starting' | 'live' | 'ended'; createdAt: number; endedAt: number | null; leaseUntil: number; viewers: number; publishing: number; mediaClosed: number };
+export type Broadcast = { id: string; ownerId: string; ownerSession: string | null; publisherId: string; title: string; quality: '720p60' | '1080p60'; state: 'starting' | 'live' | 'ended'; createdAt: number; endedAt: number | null; leaseUntil: number; viewers: number; publishing: number; mediaClosed: number };
 export type Guest = { id: string; streamId: string; banned: number };
 export const guestLabel = (id: string) => `Аноним-${id.replace(/^guest-/, '').toUpperCase()}`;
 export function publicBroadcast(stream: Broadcast) {
@@ -31,18 +31,20 @@ export function openStreamStore(path: string) {
     );
     CREATE INDEX IF NOT EXISTS stream_messages_history ON stream_messages(streamId,id);
   `);
+  if (!(db.prepare('PRAGMA table_info(broadcasts)').all() as { name: string }[]).some(c => c.name === 'ownerSession')) db.exec('ALTER TABLE broadcasts ADD COLUMN ownerSession TEXT');
   const get = (id: string) => db.prepare('SELECT * FROM broadcasts WHERE id = ?').get(id) as Broadcast | undefined;
   const require = (id: string) => { const row = get(id); if (!row) throw new ApiError(404, 'Эфир не найден.'); return row; };
   const end = (id: string) => db.prepare("UPDATE broadcasts SET state='ended', endedAt=COALESCE(endedAt,?), publishing=0,viewers=0 WHERE id=?").run(Date.now(), id);
   return {
     db, get, require, end,
-    create(ownerId: string, title: string, quality: Broadcast['quality']) {
+    create(ownerId: string, title: string, quality: Broadcast['quality'], ownerSession: string | null = null) {
       db.exec('BEGIN IMMEDIATE');
       try {
         if (db.prepare("SELECT id FROM broadcasts WHERE ownerId=? AND state!='ended'").get(ownerId)) throw new ApiError(409, 'У вас уже есть активный эфир.');
         if ((db.prepare("SELECT COUNT(*) AS n FROM broadcasts WHERE state!='ended'").get() as { n: number }).n >= 2) throw new ApiError(409, 'Сейчас уже идут два эфира. Попробуйте позже.');
         const id = randomBytes(16).toString('hex'); const now = Date.now();
         db.prepare('INSERT INTO broadcasts(id,ownerId,publisherId,title,quality,state,createdAt,leaseUntil) VALUES(?,?,?,?,?,?,?,?)').run(id, ownerId, 'source-' + randomBytes(12).toString('hex'), title, quality, 'starting', now, now + 60_000);
+        db.prepare('UPDATE broadcasts SET ownerSession=? WHERE id=?').run(ownerSession, id);
         db.exec('COMMIT'); return require(id);
       } catch (error) { db.exec('ROLLBACK'); throw error; }
     },

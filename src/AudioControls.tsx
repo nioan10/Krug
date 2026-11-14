@@ -1,3 +1,4 @@
+import { participantUserId } from './participant-user';
 import { useEffect, useId, useRef, useState } from 'react';
 import { AudioTrack, useLocalParticipant, useRoomContext, useTracks } from '@livekit/components-react';
 import { LocalAudioTrack, Track } from 'livekit-client';
@@ -8,7 +9,7 @@ import { MicrophoneGain } from './MicrophoneGain';
 export function IncomingAudio({ levels, muted }: { levels: AudioLevels; muted: boolean }) {
   const tracks = useTracks([Track.Source.Microphone, Track.Source.ScreenShareAudio, Track.Source.Unknown], { onlySubscribed: true, updateOnlyOn: [] })
     .filter(ref => !ref.participant.isLocal && ref.publication.kind === Track.Kind.Audio);
-  return <div hidden>{tracks.map(trackRef => <AudioTrack key={trackRef.publication.trackSid} trackRef={trackRef} volume={incomingLevel(levels, trackRef.participant.identity)} muted={muted} />)}</div>;
+  return <div hidden>{tracks.map(trackRef => <AudioTrack key={trackRef.publication.trackSid} trackRef={trackRef} volume={incomingLevel(levels, participantUserId(trackRef.participant))} muted={muted} />)}</div>;
 }
 
 export function VolumeSlider({ label, value, max = 2, onChange }: { label: string; value: number; max?: number; onChange: (value: number) => void }) {
