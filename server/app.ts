@@ -17,12 +17,14 @@ import { ApiError, digest, hashPassword, newSecret, verifyPassword } from './sec
 import { createMediaService, type MediaService } from './media.ts';
 import { createSessionTransfers } from './session-transfer.ts';
 import { mentionNames } from './mentions.ts';
+import { registerBroadcasts } from './broadcast-routes.ts';
+import type { StreamMedia } from './stream-media.ts';
 
 declare module 'fastify' { interface FastifyRequest { user: User | null; sessionHash: string | null } }
 const credentials = z.object({ username: z.string().trim().toLowerCase().regex(/^[a-z0-9_]{3,24}$/), password: z.string().min(12).max(128) });
 const channelId = (request: FastifyRequest) => z.object({ id: z.string().min(1).max(64) }).parse(request.params).id;
 
-export async function buildApp(config: Config, media: MediaService = createMediaService(config)) {
+export async function buildApp(config: Config, media: MediaService = createMediaService(config), streamMedia?: StreamMedia) {
   const app = Fastify({
     logger: config.NODE_ENV !== 'test' ? { level: 'info', redact: ['req.headers.cookie', 'req.headers.authorization', 'res.headers.set-cookie'] } : false,
     logController: new LogController({ disableRequestLogging: true }), bodyLimit: 16 * 1024,
@@ -45,7 +47,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
   await app.register(helmet, {
     contentSecurityPolicy: { directives: {
       defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"],
-      connectSrc: ["'self'", config.LIVEKIT_URL, config.LIVEKIT_URL.replace(/^ws/, 'http')],
+      connectSrc: ["'self'", config.LIVEKIT_URL, config.LIVEKIT_URL.replace(/^ws/, 'http'), ...(config.STREAM_ORIGIN ? [config.STREAM_ORIGIN, config.STREAM_ORIGIN.replace(/^http/, 'ws'), config.STREAM_LIVEKIT_URL, config.STREAM_LIVEKIT_URL.replace(/^ws/, 'http')] : [])],
       imgSrc: ["'self'", 'data:'], mediaSrc: ["'self'", 'blob:'], workerSrc: ["'self'", 'blob:'],
       objectSrc: ["'none'"], frameAncestors: ["'none'"], formAction: ["'self'"],
       upgradeInsecureRequests: config.NODE_ENV === 'production' ? [] : null,
@@ -77,6 +79,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     req.user = user; req.sessionHash = hash;
   };
   const admin = async (req: FastifyRequest) => { await auth(req); if (req.user!.role !== 'admin') throw new ApiError(403, 'Это действие доступно владельцу.'); };
+  await registerBroadcasts(app, config, auth, streamMedia);
   const createSession = (user: User, reply: FastifyReply) => {
     const token = newSecret();
     db.prepare('INSERT INTO sessions VALUES (?, ?, ?)').run(digest(token), user.id, Date.now() + 7 * DAY);
