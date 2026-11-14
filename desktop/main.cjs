@@ -8,7 +8,7 @@ const { prepareMigration } = require('./session-migration.cjs');
 const ORIGIN = !app.isPackaged && process.env.KRUG_DESKTOP_DEV === '1' ? 'http://127.0.0.1:5173' : 'https://chat.nioservices.website';
 const helper = app.isPackaged ? path.join(process.resourcesPath, 'capture', 'Krug.Capture.exe') : path.join(__dirname, 'capture', 'publish', 'Krug.Capture.exe');
 let mainWindow, picker, permissionWindow, selectedPid, capture;
-let updateStatus = { state: 'idle' }, updateController;
+let updateStatus = { state: 'idle' }, updateController, requestNativeUpdate;
 function reportUpdate(status) { updateStatus = status; if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('krug:update-status', status); }
 function fromMain(event) {
   try { return event.sender === mainWindow?.webContents && event.senderFrame === mainWindow.webContents.mainFrame && new URL(event.senderFrame.url).origin === ORIGIN; } catch { return false; }
@@ -115,13 +115,15 @@ ipcMain.handle('krug:audio-start', async event => {
 ipcMain.handle('krug:audio-stop', event => { if (!fromMain(event)) throw new Error('Invalid sender'); selectedPid = undefined; stopAudio(); });
 ipcMain.handle('krug:call-state', (event, active) => { if (!fromMain(event) || typeof active !== 'boolean') throw new Error('Invalid sender or call state'); updateController?.setCallActive(active); });
 ipcMain.handle('krug:update-state', event => { if (!fromMain(event)) throw new Error('Invalid sender'); return updateStatus; });
+ipcMain.handle('krug:update-request', async event => { if (!fromMain(event)) throw new Error('Invalid sender'); await requestNativeUpdate?.(); });
+ipcMain.handle('krug:update-cancel', event => { if (!fromMain(event)) throw new Error('Invalid sender'); updateController?.cancel(); });
 function configureUpdates() {
   if (!app.isPackaged) return;
   const { autoUpdater } = require('./generated/updater.cjs');
-  autoUpdater.autoDownload = true;
+  autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.disableDifferentialDownload = true;
-  let checking = false, downloading = false, pending = false, migrateToWebView = false;
+  let checking = false, downloading = false, pending = false, available = false, migrateToWebView = false;
   updateController = createUpdateController({
     install: () => autoUpdater.quitAndInstall(true, true), report: reportUpdate,
     prepare: async () => {
@@ -132,24 +134,36 @@ function configureUpdates() {
     },
     onPrepareError: () => { pending = false; },
   });
-  autoUpdater.on('update-available', () => { downloading = true; reportUpdate({ state: 'downloading', percent: 0 }); });
-  autoUpdater.on('update-not-available', () => reportUpdate({ state: 'idle' }));
+  autoUpdater.on('update-available', () => { available = true; reportUpdate({ state: 'available' }); });
+  autoUpdater.on('update-not-available', () => { available = false; reportUpdate({ state: 'idle' }); });
   autoUpdater.on('download-progress', info => reportUpdate({ state: 'downloading', percent: Math.max(0, Math.min(100, Math.round(info.percent))) }));
   autoUpdater.on('update-downloaded', info => { downloading = false; pending = true; migrateToWebView = info.krugRuntime === 'webview2'; updateController.downloaded(); });
   autoUpdater.on('error', () => { if (downloading || pending) reportUpdate({ state: 'error' }); downloading = false; pending = false; });
+  async function token() {
+    const response = await mainWindow.webContents.session.fetch(`${ORIGIN}/api/desktop-updates/access`, { credentials: 'include', headers: { 'X-Krug-Desktop-Capability': 'manual-v1' } });
+    if (!response.ok) throw new Error('Update access unavailable');
+    const data = await response.json();
+    if (typeof data.token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(data.token)) throw new Error('Invalid update access');
+    autoUpdater.requestHeaders = { Authorization: `Bearer ${data.token}` };
+  }
   async function check() {
     if (checking || downloading || pending || !mainWindow || mainWindow.isDestroyed()) return;
     checking = true;
     try {
-      const response = await mainWindow.webContents.session.fetch(`${ORIGIN}/api/desktop-updates/access`, { credentials: 'include', headers: { 'X-Krug-Desktop-Capability': 'migration-v1' } });
-      if (!response.ok) return;
-      const data = await response.json();
-      if (typeof data.token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(data.token)) return;
-      autoUpdater.requestHeaders = { Authorization: `Bearer ${data.token}` };
+      await token();
       await autoUpdater.checkForUpdates();
     } catch { /* Retry later; a missing feed is normal until the first release. */ }
     finally { checking = false; }
   }
+  requestNativeUpdate = async () => {
+    updateController.requestInstall();
+    if (pending || downloading) return;
+    if (!available) await check();
+    if (!available) { reportUpdate({ state: 'error' }); return; }
+    downloading = true; reportUpdate({ state: 'downloading', percent: 0 });
+    try { await token(); await autoUpdater.downloadUpdate(); }
+    catch { downloading = false; reportUpdate({ state: 'error' }); }
+  };
   mainWindow.webContents.on('did-finish-load', () => void check());
   mainWindow.on('focus', () => void check());
   setInterval(() => void check(), 10 * 60 * 1000).unref();

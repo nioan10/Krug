@@ -73,7 +73,10 @@ public final class MainActivity extends Activity {
         settings.setSupportMultipleWindows(true);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setUserAgentString(settings.getUserAgentString() + " KrugAndroid/1");
-        updater = new AndroidUpdater(this);
+        updater = new AndroidUpdater(this, state -> {
+            if (!isFinishing() && !isDestroyed() && trusted(Uri.parse(web.getUrl() == null ? "" : web.getUrl())))
+                web.evaluateJavascript("window.dispatchEvent(new CustomEvent('krug-android-update',{detail:" + org.json.JSONObject.quote(state) + "}))", null);
+        });
         web.addJavascriptInterface(new NativeBridge(), "KrugAndroidNative");
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, false);
@@ -93,6 +96,9 @@ public final class MainActivity extends Activity {
     public final class NativeBridge {
         @android.webkit.JavascriptInterface public void setCallActive(boolean active) { runOnUiThread(() -> { if (!isFinishing() && !isDestroyed()) { boolean joining = active && !callActive; callActive = active; updater.setCallActive(active); updateCallService(); if (joining) requestCallNotifications(); } }); }
         @android.webkit.JavascriptInterface public void setMicrophoneActive(boolean active) { runOnUiThread(() -> { if (!isFinishing() && !isDestroyed()) { microphoneActive = active; updateCallService(); } }); }
+        @android.webkit.JavascriptInterface public String getUpdateState() { return updater.getState(); }
+        @android.webkit.JavascriptInterface public void requestUpdate() { runOnUiThread(() -> updater.requestUpdate()); }
+        @android.webkit.JavascriptInterface public void cancelUpdate() { runOnUiThread(() -> updater.cancel()); }
     }
     private void updateCallService() {
         Intent intent = new Intent(this, CallService.class).putExtra("microphone", microphoneActive);

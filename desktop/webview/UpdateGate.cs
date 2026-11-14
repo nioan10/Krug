@@ -6,33 +6,44 @@ internal sealed class UpdateGate(Action<Action> schedule, Action install, Action
 {
     private bool? inCall;
     private bool ready;
+    private bool requested;
     private bool scheduled;
 
     public void SetCallActive(bool value)
     {
         inCall = value;
-        if (ready) report(value ? "queued" : "ready");
+        if (ready) report(requested && value ? "queued" : "ready");
         MaybeInstall();
     }
 
     public void Downloaded()
     {
         ready = true;
-        report(inCall == true ? "queued" : "ready");
+        report(requested && inCall == true ? "queued" : "ready");
         MaybeInstall();
     }
+
+    public void RequestInstall()
+    {
+        requested = true;
+        if (ready) report(inCall == true ? "queued" : "ready");
+        MaybeInstall();
+    }
+
+    public void Cancel() { requested = false; if (ready) report("ready"); }
 
     public void ResetCallState() => inCall = null;
 
     private void MaybeInstall()
     {
-        if (!ready || inCall != false || scheduled) return;
+        if (!ready || !requested || inCall != false || scheduled) return;
         scheduled = true;
         schedule(() =>
         {
             scheduled = false;
-            if (!ready || inCall != false) return;
+            if (!ready || !requested || inCall != false) return;
             ready = false;
+            requested = false;
             report("installing");
             install();
         });

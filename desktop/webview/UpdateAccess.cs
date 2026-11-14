@@ -18,7 +18,7 @@ internal static class UpdateAccess
         if (origin.Scheme != Uri.UriSchemeHttps || origin.AbsolutePath != "/" || !string.IsNullOrEmpty(origin.UserInfo) ||
             !string.IsNullOrEmpty(origin.Query) || !string.IsNullOrEmpty(origin.Fragment)) throw new InvalidOperationException("Invalid update origin.");
         using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(origin, "/api/desktop-updates/access"));
-        request.Headers.TryAddWithoutValidation("X-Krug-Desktop-Capability", "migration-v1");
+        request.Headers.TryAddWithoutValidation("X-Krug-Desktop-Capability", "manual-v1");
         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         if (!response.IsSuccessStatusCode) throw new HttpRequestException("Update access unavailable.");
         using var input = await response.Content.ReadAsStreamAsync();

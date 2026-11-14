@@ -43,6 +43,8 @@
     onAudioEnded: callback => listen(endedListeners, callback),
     setCallActive: active => invoke('call-state', active),
     getUpdateState: () => invoke('update-state'),
+    requestUpdate: () => invoke('update-request'),
+    cancelUpdate: () => invoke('update-cancel'),
     onUpdate: callback => listen(updateListeners, callback),
   });
 })();

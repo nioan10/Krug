@@ -25,7 +25,7 @@ internal sealed class UpdateDownloader(HttpClient client, Uri origin, string sta
         UseCookies = false,
     }) { Timeout = TimeSpan.FromMinutes(10) };
 
-    public async Task<Downloaded?> DownloadAsync(string token, Version current, CancellationToken cancellationToken, IProgress<int>? progress = null)
+    public async Task<UpdateManifest?> CheckAsync(string token, Version current, CancellationToken cancellationToken)
     {
         if (origin.Scheme != Uri.UriSchemeHttps || origin.AbsolutePath != "/" || !string.IsNullOrEmpty(origin.Query) ||
             !string.IsNullOrEmpty(origin.Fragment) || !string.IsNullOrEmpty(origin.UserInfo)) throw new InvalidOperationException("Invalid update origin.");
@@ -37,6 +37,14 @@ internal sealed class UpdateDownloader(HttpClient client, Uri origin, string sta
         var data = await ReadBounded(manifestStream, MaxManifestBytes, cancellationToken);
         var manifest = UpdateManifest.Parse(new UTF8Encoding(false, true).GetString(data));
         if (!manifest.IsNewerThan(current)) return null;
+        return manifest;
+    }
+
+    public async Task<Downloaded> DownloadAsync(string token, UpdateManifest manifest, CancellationToken cancellationToken, IProgress<int>? progress = null)
+    {
+        if (origin.Scheme != Uri.UriSchemeHttps || origin.AbsolutePath != "/" || !string.IsNullOrEmpty(origin.Query) ||
+            !string.IsNullOrEmpty(origin.Fragment) || !string.IsNullOrEmpty(origin.UserInfo)) throw new InvalidOperationException("Invalid update origin.");
+        if (!Regex.IsMatch(token, @"\A[A-Za-z0-9_-]{43}\z")) throw new InvalidOperationException("Invalid update token.");
         using var request = Request(new Uri(origin, "/api/desktop-updates/" + manifest.FileName), token);
         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         EnsureSuccess(response);

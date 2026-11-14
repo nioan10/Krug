@@ -54,17 +54,49 @@ export function AppUpdate({ inCall }: { inCall: boolean }) {
   return <div className="update-banner" role="status"><Check size={15} /><span>{message}</span><button disabled={state.applying} onClick={() => { if (state.queued) updates?.cancel(); else void updates?.request(inCall); }}><RefreshCw size={13} />{label}</button></div>;
 }
 
-export function DesktopUpdate() {
-  const [status, setStatus] = useState<DesktopUpdateStatus>({ state: 'idle' });
+type NativeState = 'idle' | 'available' | 'downloading' | 'ready' | 'queued' | 'installing' | 'error';
+function LegacyUpdate({ kind }: { kind: 'desktop' | 'android' }) {
+  const [available, setAvailable] = useState(false);
   useEffect(() => {
-    const bridge = window.krugDesktop;
+    let stopped = false;
+    const check = () => { void fetch('/api/manual-update-options', { credentials: 'same-origin' }).then(response => response.ok ? response.json() as Promise<Partial<Record<'desktop' | 'android', boolean>>> : {} as Partial<Record<'desktop' | 'android', boolean>>).then(result => { if (!stopped) setAvailable(Boolean(result[kind])); }).catch(() => {}); };
+    check(); window.addEventListener('focus', check); const timer = setInterval(check, 60_000);
+    return () => { stopped = true; window.removeEventListener('focus', check); clearInterval(timer); };
+  }, [kind]);
+  if (!available) return null;
+  return <div className="update-banner" role="status"><RefreshCw size={15} /><span>Доступна новая версия приложения. Для перехода на обновления по кнопке скачайте её вручную.</span><a href={kind === 'desktop' ? '/api/desktop-installer' : '/api/android-installer'} {...(kind === 'android' ? { target: '_blank', rel: 'noopener noreferrer' } : { download: true })}>Скачать</a></div>;
+}
+function WindowsUpdate() {
+  const [status, setStatus] = useState<DesktopUpdateStatus>({ state: 'idle' });
+  const bridge = window.krugDesktop;
+  useEffect(() => {
     if (!bridge) return;
     let received = false;
     const unsubscribe = bridge.onUpdate(next => { received = true; setStatus(next); });
     void bridge.getUpdateState().then(next => { if (!received) setStatus(next); }).catch(() => {});
     return unsubscribe;
-  }, []);
+  }, [bridge]);
+  if (!bridge) return null;
+  if (!bridge.requestUpdate) return <LegacyUpdate kind="desktop" />;
   if (status.state === 'idle') return null;
-  const message = status.state === 'downloading' ? `Загружаем обновление приложения: ${status.percent ?? 0}%` : status.state === 'queued' ? 'Обновление приложения установится после выхода из звонка.' : status.state === 'error' ? 'Не удалось загрузить обновление приложения. Повторим попытку позже.' : 'Устанавливаем обновление приложения…';
-  return <div className="update-banner" role="status"><RefreshCw size={15} /><span>{message}</span></div>;
+  const message = status.state === 'available' || status.state === 'ready' ? 'Доступна новая версия приложения.' : status.state === 'downloading' ? `Загружаем обновление: ${status.percent ?? 0}%` : status.state === 'queued' ? 'Обновление установится после выхода из звонка.' : status.state === 'error' ? 'Не удалось загрузить обновление. Попробуйте ещё раз.' : 'Устанавливаем обновление приложения…';
+  return <div className="update-banner" role="status"><RefreshCw size={15} /><span>{message}</span>{['available', 'ready', 'queued', 'error'].includes(status.state) && <button onClick={() => { const operation = status.state === 'queued' ? bridge.cancelUpdate?.() : bridge.requestUpdate?.(); void operation?.catch(() => setStatus({ state: 'error' })); }}>{status.state === 'queued' ? 'Отменить' : status.state === 'error' ? 'Повторить' : 'Обновить'}</button>}</div>;
 }
+function AndroidUpdate() {
+  const bridge = window.KrugAndroidNative;
+  const [state, setState] = useState<NativeState>('idle');
+  useEffect(() => {
+    if (!bridge?.getUpdateState) return;
+    const known = ['idle', 'available', 'downloading', 'ready', 'queued', 'installing', 'error'];
+    const update = (value: unknown) => { if (typeof value === 'string' && known.includes(value)) setState(value as NativeState); };
+    const handler = (event: Event) => update((event as CustomEvent).detail);
+    window.addEventListener('krug-android-update', handler); update(bridge.getUpdateState());
+    return () => window.removeEventListener('krug-android-update', handler);
+  }, [bridge]);
+  if (!bridge) return null;
+  if (!bridge.requestUpdate) return <LegacyUpdate kind="android" />;
+  if (state === 'idle') return null;
+  const message = state === 'available' || state === 'ready' ? 'Доступна новая версия приложения.' : state === 'downloading' ? 'Загружаем обновление приложения…' : state === 'queued' ? 'Обновление установится после выхода из звонка.' : state === 'error' ? 'Не удалось загрузить обновление. Попробуйте ещё раз.' : 'Открываем установку приложения…';
+  return <div className="update-banner" role="status"><RefreshCw size={15} /><span>{message}</span>{['available', 'ready', 'queued', 'error'].includes(state) && <button onClick={() => { if (state === 'queued') bridge.cancelUpdate?.(); else bridge.requestUpdate?.(); }}>{state === 'queued' ? 'Отменить' : state === 'error' ? 'Повторить' : 'Обновить'}</button>}</div>;
+}
+export function DesktopUpdate() { return <><WindowsUpdate /><AndroidUpdate /></>; }

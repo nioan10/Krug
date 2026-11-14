@@ -10,7 +10,7 @@ if (process.platform !== 'win32') throw new Error('The WebView2 preview requires
 const root = process.cwd(), require = createRequire(import.meta.url);
 const metadata = JSON.parse(await readFile('package.json', 'utf8'));
 const release = process.argv.includes('--release');
-const version = '0.2.2';
+const version = '0.2.3';
 const product = release ? metadata.build.productName : 'Krug WebView Preview';
 const base = path.resolve('.local');
 await mkdir(base, { recursive: true });

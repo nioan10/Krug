@@ -32,6 +32,7 @@ internal sealed class DesktopWindow : Form
     private readonly CancellationTokenSource closing = new();
     private readonly System.Windows.Forms.Timer updateTimer = new() { Interval = 10 * 60 * 1000 };
     private UpdateDownloader.Downloaded? downloadedUpdate;
+    private UpdateManifest? availableUpdate;
 #if !KRUG_TEST
     private bool checkingUpdate;
 #endif
@@ -237,6 +238,11 @@ internal sealed class DesktopWindow : Form
                     result = new { state = updateState, percent = updatePercent };
 #endif
                     break;
+                case "update-request":
+                    updates.RequestInstall();
+                    if (downloadedUpdate is null) await DownloadRequestedUpdateAsync();
+                    break;
+                case "update-cancel": updates.Cancel(); break;
                 default: throw new InvalidOperationException();
             }
         }
@@ -265,7 +271,7 @@ internal sealed class DesktopWindow : Form
         await Task.CompletedTask;
         return;
 #else
-        if (checkingUpdate || downloadedUpdate != null || IsDisposed || browser.CoreWebView2 is null || !IsOrigin(browser.CoreWebView2.Source)) return;
+        if (checkingUpdate || downloadedUpdate != null || availableUpdate != null || IsDisposed || browser.CoreWebView2 is null || !IsOrigin(browser.CoreWebView2.Source)) return;
         checkingUpdate = true;
         try
         {
@@ -279,17 +285,47 @@ internal sealed class DesktopWindow : Form
             using var accessClient = UpdateAccess.CreateClient(cookies);
             var token = await UpdateAccess.GetTokenAsync(accessClient, origin, closing.Token);
             using var downloadClient = UpdateDownloader.CreateClient();
-            var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Krug", "updates");
             var current = Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0, 0);
+            var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Krug", "updates");
+            availableUpdate = await new UpdateDownloader(downloadClient, origin, directory).CheckAsync(token, current, closing.Token);
+            ReportUpdate(availableUpdate is null ? "idle" : "available");
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception) { /* Retry checks later without interrupting the user. */ }
+        finally { checkingUpdate = false; }
+#endif
+    }
+
+    private async Task DownloadRequestedUpdateAsync()
+    {
+#if KRUG_TEST
+        await Task.CompletedTask;
+#else
+        if (checkingUpdate || IsDisposed || browser.CoreWebView2 is null || !IsOrigin(browser.CoreWebView2.Source)) return;
+        if (availableUpdate is null) await CheckForUpdatesAsync();
+        if (availableUpdate is null || checkingUpdate) return;
+        checkingUpdate = true;
+        try
+        {
+            var origin = new Uri(Origin + "/");
+            var webCookies = await browser.CoreWebView2.CookieManager.GetCookiesAsync(origin.AbsoluteUri);
+            var session = webCookies.FirstOrDefault(cookie => cookie.Name == "__Host-krug" && cookie.IsHttpOnly && cookie.IsSecure &&
+                cookie.Path == "/" && cookie.Domain.TrimStart('.').Equals(origin.Host, StringComparison.OrdinalIgnoreCase));
+            if (session is null) { ReportUpdate("error"); return; }
+            var cookies = new CookieContainer(); cookies.Add(origin, session.ToSystemNetCookie());
+            using var accessClient = UpdateAccess.CreateClient(cookies);
+            var token = await UpdateAccess.GetTokenAsync(accessClient, origin, closing.Token);
+            using var downloadClient = UpdateDownloader.CreateClient();
+            var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Krug", "updates");
+            ReportUpdate("downloading");
             var progress = new Progress<int>(percent =>
             {
                 if (IsDisposed || downloadedUpdate != null) return;
                 updateState = "downloading"; updatePercent = percent;
                 Send(new { type = "update", status = new { state = updateState, percent } });
             });
-            var candidate = await new UpdateDownloader(downloadClient, origin, directory).DownloadAsync(token, current, closing.Token, progress);
-            if (candidate is null) { ReportUpdate("idle"); return; }
-            downloadedUpdate = candidate;
+            downloadedUpdate = await new UpdateDownloader(downloadClient, origin, directory).DownloadAsync(token, availableUpdate, closing.Token, progress);
+            availableUpdate = null;
             updates.Downloaded();
         }
         catch (OperationCanceledException) { }

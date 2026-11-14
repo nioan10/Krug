@@ -35,7 +35,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
   const { db } = store;
   const sockets = new Map<WebSocket, { user: User; hash: string; alive: boolean }>();
   const attempts = new Map<string, { count: number; expires: number }>();
-  const updateTokens = new Map<string, { expires: number; migrationAware: boolean }>();
+  const updateTokens = new Map<string, { expires: number; manualAware: boolean }>();
   const sessionTransfers = createSessionTransfers();
   const voiceAudioStates = new Map<string, { channelId: string; deafened: boolean; afk: boolean; expiresAt: number }>();
   const deletingChannels = new Set<string>();
@@ -255,21 +255,26 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     if (!/^Okrug-\d+\.\d+\.\d+\.apk$/.test(name)) throw new ApiError(404, 'Обновление не найдено.');
     return resolve(config.DESKTOP_UPDATE_DIR, 'android', name);
   };
-  const readAndroidManifest = async () => {
+  const readAndroidManifest = async (manual = false) => {
     try {
-      const raw = JSON.parse(await readFile(resolve(config.DESKTOP_UPDATE_DIR, 'android', 'latest.json'), 'utf8'));
+      const raw = JSON.parse(await readFile(resolve(config.DESKTOP_UPDATE_DIR, 'android', manual ? 'manual-latest.json' : 'latest.json'), 'utf8'));
       const manifest = z.object({ versionCode: z.number().int().positive(), versionName: z.string().regex(/^\d+\.\d+\.\d+$/), file: z.string().regex(/^Okrug-\d+\.\d+\.\d+\.apk$/), sha256: z.string().regex(/^[a-f0-9]{64}$/), size: z.number().int().positive().max(50 * 1024 * 1024) }).parse(raw);
+      if (!manual && manifest.versionCode > 1) throw new Error('Automatic Android updates are disabled');
       if (manifest.file !== `Okrug-${manifest.versionName}.apk`) throw new Error('Inconsistent Android version');
       const info = await stat(androidFile(manifest.file));
       if (!info.isFile() || info.size !== manifest.size) throw new Error('Missing Android package');
       return manifest;
     } catch { throw new ApiError(404, 'Обновление Android пока недоступно.'); }
   };
-  app.get('/api/android-updates/latest.json', { preHandler: auth }, readAndroidManifest);
+  app.get('/api/android-updates/latest.json', { preHandler: auth }, async req => readAndroidManifest(req.headers['x-krug-android-update-mode'] === 'manual-v1'));
   app.get('/api/android-installer', { preHandler: auth }, async (_req, reply) => {
-    const manifest = await readAndroidManifest();
+    let manifest; try { manifest = await readAndroidManifest(true); } catch { manifest = await readAndroidManifest(); }
     return reply.redirect(`/api/android-updates/${manifest.file}`);
   });
+  app.get('/api/manual-update-options', { preHandler: auth }, async () => ({
+    desktop: existsSync(resolve(config.DESKTOP_UPDATE_DIR, 'manual-latest.yml')),
+    android: existsSync(resolve(config.DESKTOP_UPDATE_DIR, 'android', 'manual-latest.json')),
+  }));
   app.get('/api/android-updates/:file', { preHandler: auth }, async (req, reply) => {
     const { file } = z.object({ file: z.string() }).parse(req.params);
     const path = androidFile(file);
@@ -280,8 +285,8 @@ export async function buildApp(config: Config, media: MediaService = createMedia
   });
   app.get('/api/desktop-installer', { preHandler: auth }, async (_req, reply) => {
     let manifest: string;
-    try { manifest = await readFile(resolve(config.DESKTOP_UPDATE_DIR, 'latest.yml'), 'utf8'); }
-    catch { throw new ApiError(404, 'Установщик пока недоступен.'); }
+    try { manifest = await readFile(resolve(config.DESKTOP_UPDATE_DIR, 'manual-latest.yml'), 'utf8'); }
+    catch { try { manifest = await readFile(resolve(config.DESKTOP_UPDATE_DIR, 'latest.yml'), 'utf8'); } catch { throw new ApiError(404, 'Установщик пока недоступен.'); } }
     const file = /^path:\s*(Krug-Setup-\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\.exe)\s*$/m.exec(manifest)?.[1];
     if (!file) throw new ApiError(503, 'Установщик пока недоступен.');
     const path = resolve(config.DESKTOP_UPDATE_DIR, file);
@@ -294,7 +299,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     const now = Date.now();
     for (const [token, state] of updateTokens) if (state.expires <= now) updateTokens.delete(token);
     if (updateTokens.size >= 1000) throw new ApiError(429, 'Повторите попытку позже.');
-    const token = newSecret(); updateTokens.set(digest(token), { expires: now + 10 * 60 * 1000, migrationAware: req.headers['x-krug-desktop-capability'] === 'migration-v1' });
+    const token = newSecret(); updateTokens.set(digest(token), { expires: now + 10 * 60 * 1000, manualAware: req.headers['x-krug-desktop-capability'] === 'manual-v1' });
     return { token };
   });
   app.get('/api/desktop-updates/:file', async (req, reply) => {
@@ -304,18 +309,13 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     if (!access || access.expires <= Date.now()) throw new ApiError(401, 'Обновление недоступно.');
     const { file } = z.object({ file: z.string() }).parse(req.params);
     if (file !== 'latest.yml' && !/^Krug-Setup-\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\.exe$/.test(file)) throw new ApiError(404, 'Обновление не найдено.');
-    let selected = file;
-    if (file === 'latest.yml' && !access.migrationAware) {
-      // Old Electron clients must first receive a migration-aware Electron
-      // release, including clients that have been offline for a long time.
-      if (existsSync(resolve(config.DESKTOP_UPDATE_DIR, 'legacy.yml'))) selected = 'legacy.yml';
-      else {
-        let latest: string;
-        try { latest = await readFile(resolve(config.DESKTOP_UPDATE_DIR, 'latest.yml'), 'utf8'); }
-        catch { throw new ApiError(404, 'Обновление не найдено.'); }
-        if (/^krugRuntime:\s*webview2\s*$/m.test(latest)) selected = 'legacy.yml';
-      }
+    // Old clients install automatically. Never advertise an update to them;
+    // they must move to the manual-update client via a user-initiated download.
+    if (file === 'latest.yml' && !access.manualAware) {
+      const hash = 'A'.repeat(86) + '==';
+      return reply.type('text/yaml; charset=utf-8').send(`version: 0.0.0\nfiles:\n  - url: Krug-Setup-0.0.0.exe\n    sha512: ${hash}\n    size: 1\npath: Krug-Setup-0.0.0.exe\nsha512: ${hash}\n`);
     }
+    const selected = file === 'latest.yml' ? 'manual-latest.yml' : file;
     const path = resolve(config.DESKTOP_UPDATE_DIR, selected);
     let info; try { info = await stat(path); } catch { throw new ApiError(404, 'Обновление не найдено.'); }
     if (!info.isFile()) throw new ApiError(404, 'Обновление не найдено.');

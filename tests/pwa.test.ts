@@ -15,33 +15,38 @@ test('PWA manifest has standalone launch and valid PNG app icons', () => {
   }
   assert.ok(manifest.icons.some((i: { purpose: string }) => i.purpose === 'maskable'));
 });
-test('service worker never intercepts API, credentials or third-party requests; offline navigation uses static shell', async () => {
+test('service worker keeps the old shell across automatic activation until explicit approval', async () => {
   const handlers: Record<string, (event: any) => void> = {};
-  const shell = new Response('<html>static shell</html>');
-  let fetches = 0;
-  const context = {
-    self: { location: { origin: 'https://chat.example.com' }, addEventListener: (type: string, handler: (event: any) => void) => { handlers[type] = handler; } },
-    URL,
-    fetch: async () => { fetches++; throw new Error('offline'); },
-    caches: { open: async () => ({ match: async (path: string) => path === '/' ? shell : undefined }) },
+  const stores = new Map<string, Map<string, Response>>();
+  const caches = {
+    keys: async () => [...stores.keys()],
+    open: async (name: string) => {
+      if (!stores.has(name)) stores.set(name, new Map());
+      const store = stores.get(name)!;
+      return { match: async (key: string) => store.get(key)?.clone(), put: async (key: string, response: Response) => { store.set(key, response.clone()); } };
+    },
   };
-  const source = readFileSync('scripts/sw-template.js', 'utf8').replace('__VERSION__', 'test').replace('__PRECACHE__', JSON.stringify(['/', '/index.html', '/assets/app.js']));
-  vm.runInNewContext(source, context);
-  for (const [url, method] of [['https://chat.example.com/api/me', 'GET'], ['https://chat.example.com/api/channels/lounge/voice-token', 'POST'], ['https://chat.example.com/api/channels/general/messages', 'GET'], ['https://media.example.com/rtc', 'GET']]) {
+  (await caches.open('krug-static-old')).put('/', new Response('<html><head></head>old</html>'));
+  (await caches.open('krug-static-new')).put('/', new Response('<html><head></head>new</html>'));
+  let activated = false;
+  let fetches = 0;
+  vm.runInNewContext(readFileSync('scripts/sw-template.js', 'utf8').replace('__VERSION__', 'new').replace('__PRECACHE__', '[]'), {
+    self: { location: { origin: 'https://chat.example.com' }, addEventListener: (type: string, handler: (event: any) => void) => { handlers[type] = handler; }, clients: { claim: async () => {} }, skipWaiting: async () => { activated = true; } },
+    URL, Response, Headers, caches, fetch: async () => { fetches++; throw new Error('offline'); },
+  });
+  let lifetime!: Promise<void>;
+  handlers.activate({ waitUntil: (promise: Promise<void>) => { lifetime = promise; } }); await lifetime;
+  for (const [url, method] of [['https://chat.example.com/api/me', 'GET'], ['https://chat.example.com/api/voice', 'POST'], ['https://media.example.com/rtc', 'GET']]) {
     handlers.fetch({ request: { url, method }, respondWith: () => assert.fail('Private or foreign request intercepted') });
   }
-  assert.equal(fetches, 0);
-  let response: Promise<Response> | undefined;
-  handlers.fetch({ request: { url: 'https://chat.example.com/', method: 'GET', mode: 'navigate' }, respondWith: (p: Promise<Response>) => { response = p; } });
-  assert.ok(response); assert.equal(await (await response).text(), '<html>static shell</html>');
-});
-
-test('explicit update requests keep the worker alive until activation has been requested', async () => {
-  const handlers: Record<string, (event: any) => void> = {};
-  let activated = false; let lifetime: Promise<void> | undefined;
-  vm.runInNewContext(readFileSync('scripts/sw-template.js', 'utf8').replace('__VERSION__', 'test').replace('__PRECACHE__', '[]'), {
-    self: { addEventListener: (type: string, listener: (event: any) => void) => { handlers[type] = listener; }, skipWaiting: async () => { activated = true; } },
-  });
-  handlers.message({ data: { type: 'APPLY_UPDATE' }, waitUntil: (promise: Promise<void>) => { lifetime = promise; } });
-  assert.ok(lifetime); await lifetime; assert.equal(activated, true);
+  const navigate = async () => { let response!: Promise<Response>; handlers.fetch({ request: { url: 'https://chat.example.com/', method: 'GET', mode: 'navigate' }, respondWith: (p: Promise<Response>) => { response = p; } }); return (await response).text(); };
+  assert.match(await navigate(), /old/);
+  assert.match(await navigate(), /__krug_update_notice__/);
+  assert.equal(fetches, 0); assert.equal(activated, false);
+  let acknowledged = false;
+  handlers.message({ data: { type: 'APPLY_UPDATE' }, ports: [{ postMessage: () => { acknowledged = true; } }], waitUntil: (promise: Promise<void>) => { lifetime = promise; } });
+  await lifetime;
+  assert.equal(activated, true); assert.equal(acknowledged, true);
+  assert.match(await navigate(), /new/);
+  assert.ok(stores.has('krug-static-old'));
 });

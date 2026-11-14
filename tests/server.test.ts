@@ -184,7 +184,7 @@ test('desktop update files require a short-lived update-only token and a safe fi
   assert.match(download.headers['content-disposition'] as string, /attachment/);
   const token = (await app.inject({ url: '/api/desktop-updates/access', headers: headers(admin) })).json().token as string;
   const authorization = { authorization: `Bearer ${token}` };
-  assert.equal((await app.inject({ url: '/api/desktop-updates/latest.yml', headers: authorization })).body, 'version: 0.1.1\npath: Krug-Setup-0.1.1.exe\n');
+  assert.match((await app.inject({ url: '/api/desktop-updates/latest.yml', headers: authorization })).body, /^version: 0\.0\.0\n/);
   assert.equal((await app.inject({ url: '/api/desktop-updates/Krug-Setup-0.1.1.exe', headers: authorization })).body, 'fixture');
   assert.equal((await app.inject({ url: '/api/desktop-updates/secret.txt', headers: authorization })).statusCode, 404);
   assert.equal((await app.inject({ url: '/api/channels', headers: authorization })).statusCode, 401);
@@ -192,14 +192,17 @@ test('desktop update files require a short-lived update-only token and a safe fi
   assert.equal((await app.inject({ url: '/api/desktop-installer', headers: headers(admin) })).statusCode, 503);
   const webviewManifest = 'version: 0.3.0\npath: Krug-Setup-0.3.0.exe\nkrugRuntime: webview2\n';
   writeFileSync(join(dir, 'latest.yml'), webviewManifest);
-  assert.equal((await app.inject({ url: '/api/desktop-updates/latest.yml', headers: authorization })).statusCode, 404);
+  assert.match((await app.inject({ url: '/api/desktop-updates/latest.yml', headers: authorization })).body, /^version: 0\.0\.0\n/);
   const legacyManifest = 'version: 0.2.0\npath: Krug-Setup-0.2.0.exe\n';
   writeFileSync(join(dir, 'legacy.yml'), legacyManifest);
-  assert.equal((await app.inject({ url: '/api/desktop-updates/latest.yml', headers: authorization })).body, legacyManifest);
+  assert.match((await app.inject({ url: '/api/desktop-updates/latest.yml', headers: authorization })).body, /^version: 0\.0\.0\n/);
   const capable = (await app.inject({ url: '/api/desktop-updates/access', headers: { ...headers(admin), 'x-krug-desktop-capability': 'migration-v1' } })).json().token as string;
-  assert.equal((await app.inject({ url: '/api/desktop-updates/latest.yml', headers: { authorization: `Bearer ${capable}` } })).body, webviewManifest);
+  assert.match((await app.inject({ url: '/api/desktop-updates/latest.yml', headers: { authorization: `Bearer ${capable}` } })).body, /^version: 0\.0\.0\n/);
+  writeFileSync(join(dir, 'manual-latest.yml'), webviewManifest);
+  const manual = (await app.inject({ url: '/api/desktop-updates/access', headers: { ...headers(admin), 'x-krug-desktop-capability': 'manual-v1' } })).json().token as string;
+  assert.equal((await app.inject({ url: '/api/desktop-updates/latest.yml', headers: { authorization: `Bearer ${manual}` } })).body, webviewManifest);
   writeFileSync(join(dir, 'latest.yml'), 'version: 0.3.0\npath: Krug-Setup-0.3.0.exe\n');
-  assert.equal((await app.inject({ url: '/api/desktop-updates/latest.yml', headers: authorization })).body, legacyManifest);
+  assert.match((await app.inject({ url: '/api/desktop-updates/latest.yml', headers: authorization })).body, /^version: 0\.0\.0\n/);
 });
 
 test('desktop session migration is same-origin, single-use and bound to a live session', async t => {

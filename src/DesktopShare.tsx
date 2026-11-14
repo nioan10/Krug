@@ -11,9 +11,11 @@ export type DesktopBridge = {
   onAudioEnded(callback: () => void): () => void;
   setCallActive(active: boolean): Promise<void>;
   getUpdateState(): Promise<DesktopUpdateStatus>;
+  requestUpdate?(): Promise<void>;
+  cancelUpdate?(): Promise<void>;
   onUpdate(callback: (status: DesktopUpdateStatus) => void): () => void;
 };
-export type DesktopUpdateStatus = { state: 'idle' | 'downloading' | 'ready' | 'queued' | 'installing' | 'error'; percent?: number };
+export type DesktopUpdateStatus = { state: 'idle' | 'available' | 'downloading' | 'ready' | 'queued' | 'installing' | 'error'; percent?: number };
 declare global { interface Window { krugDesktop?: DesktopBridge } }
 
 export function DesktopShare({ notify }: { notify: (message: string) => void }) {

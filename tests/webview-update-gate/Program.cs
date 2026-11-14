@@ -13,7 +13,12 @@ void Check(bool condition, string message) { if (!condition) throw new Exception
 gate.Downloaded();
 Check(callbacks.Count == 0, "An unknown call state must not install.");
 gate.SetCallActive(true);
-Check(statuses.Last() == "queued" && callbacks.Count == 0, "The update must wait for the call.");
+Check(statuses.Last() == "ready" && callbacks.Count == 0, "No install may be scheduled without a click.");
+gate.SetCallActive(false);
+Check(callbacks.Count == 0, "Leaving a call must not install without a request.");
+gate.SetCallActive(true);
+gate.RequestInstall();
+Check(statuses.Last() == "queued" && callbacks.Count == 0, "A requested update must wait for the call.");
 gate.SetCallActive(false);
 Check(callbacks.Count == 1, "Leaving a call must schedule an update.");
 gate.SetCallActive(true);
@@ -56,17 +61,19 @@ using var client = UpdateDownloader.CreateClient(handler);
 var downloader = new UpdateDownloader(client, new Uri("https://example.invalid/"), stage);
 try
 {
-    var downloaded = await downloader.DownloadAsync(token, new Version(0, 1, 1), CancellationToken.None);
+    var available = await downloader.CheckAsync(token, new Version(0, 1, 1), CancellationToken.None);
+    Check(available != null && handler.Requests == 1, "Checking must not download the installer.");
+    var downloaded = await downloader.DownloadAsync(token, available!, CancellationToken.None);
     Check(downloaded != null && File.ReadAllBytes(downloaded.Path).SequenceEqual(payload), "Verified installer must be available.");
     Check(handler.Requests == 2, "The feed and installer must both be requested.");
     File.Delete(downloaded!.Path);
-    Check(await downloader.DownloadAsync(token, new Version(0, 1, 2), CancellationToken.None) == null, "Existing version must not download again.");
+    Check(await downloader.CheckAsync(token, new Version(0, 1, 2), CancellationToken.None) == null, "Existing version must not download again.");
     handler.Payload = Encoding.UTF8.GetBytes("tampered");
-    try { await downloader.DownloadAsync(token, new Version(0, 1, 1), CancellationToken.None); throw new Exception("Tampered download was accepted."); }
+    try { await downloader.DownloadAsync(token, available!, CancellationToken.None); throw new Exception("Tampered download was accepted."); }
     catch (InvalidDataException) { }
     Check(!Directory.EnumerateFiles(stage).Any(), "Invalid downloads must be removed.");
     handler.Redirect = true;
-    try { await downloader.DownloadAsync(token, new Version(0, 1, 1), CancellationToken.None); throw new Exception("Redirect was accepted."); }
+    try { await downloader.CheckAsync(token, new Version(0, 1, 1), CancellationToken.None); throw new Exception("Redirect was accepted."); }
     catch (HttpRequestException) { }
 }
 finally { if (Directory.Exists(stage)) Directory.Delete(stage); }

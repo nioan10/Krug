@@ -6,5 +6,7 @@ contextBridge.exposeInMainWorld('krugDesktop', {
   onAudioEnded: callback => { const listener = () => callback(); ipcRenderer.on('krug:audio-ended', listener); return () => ipcRenderer.removeListener('krug:audio-ended', listener); },
   setCallActive: active => ipcRenderer.invoke('krug:call-state', active),
   getUpdateState: () => ipcRenderer.invoke('krug:update-state'),
+  requestUpdate: () => ipcRenderer.invoke('krug:update-request'),
+  cancelUpdate: () => ipcRenderer.invoke('krug:update-cancel'),
   onUpdate: callback => { const listener = (_event, status) => callback(status); ipcRenderer.on('krug:update-status', listener); return () => ipcRenderer.removeListener('krug:update-status', listener); }
 });
