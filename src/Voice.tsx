@@ -39,10 +39,31 @@ function ParticipantTile({ participant, camera, onVolume, deafened }: { particip
   if (!camera || !hasVisibleCamera(camera.publication, muted)) return <Person participant={participant} onVolume={onVolume} deafened={deafened} />;
   return <div className={`camera-tile ${speaking ? 'speaking' : ''}`}><VideoTrack trackRef={camera} /><span>{participant.name}{participant.isLocal ? ' · вы' : ''}</span><VoiceStatus participant={participant} deafened={deafened} /><button className="participant-volume icon-button" title={`Громкость: ${participant.name || participant.identity}`} aria-label={`Громкость: ${participant.name || participant.identity}`} onClick={onVolume}><Volume2 size={16} /></button>{speaking && <div className="speaking-label">Говорит</div>}</div>;
 }
-function CallContent({ onLeave, notify, channelId, presence }: { onLeave: () => void; notify: (message: string) => void; channelId: string; presence: VoiceOccupant[] }) {
+function CallContent({ room, onLeave, notify, channelId, presence }: { room: Room; onLeave: () => void; notify: (message: string) => void; channelId: string; presence: VoiceOccupant[] }) {
   const participants = useParticipants();
   const tracks = useTracks([Track.Source.ScreenShare, Track.Source.Camera], { onlySubscribed: true });
   const state = useConnectionState();
+  const [ping, setPing] = useState<number | null>(null);
+  useEffect(() => {
+    if (state !== ConnectionState.Connected) { setPing(null); return; }
+    let cancelled = false;
+    const measure = async () => {
+      try {
+        const manager = room.engine.pcManager;
+        const reports = await Promise.all([manager?.subscriber?.getStats(), manager?.publisher.getStats()]);
+        let latency: number | null = null;
+        for (const report of reports) {
+          if (!report) continue;
+          const selected = [...report.values()].find(s => s.type === 'transport' && s.selectedCandidatePairId)?.selectedCandidatePairId;
+          const pair = selected ? report.get(selected) : [...report.values()].find(s => s.type === 'candidate-pair' && s.state === 'succeeded' && s.nominated);
+          if (typeof pair?.currentRoundTripTime === 'number' && Number.isFinite(pair.currentRoundTripTime)) { latency = Math.round(pair.currentRoundTripTime * 1000); break; }
+        }
+        if (!cancelled) setPing(latency);
+      } catch { if (!cancelled) setPing(null); }
+    };
+    void measure(); const timer = setInterval(measure, 5000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [room, state]);
   const [deafened, setDeafened] = useState(false);
   const stateRequests = useRef<Promise<void>>(Promise.resolve());
   useEffect(() => {
@@ -64,7 +85,7 @@ function CallContent({ onLeave, notify, channelId, presence }: { onLeave: () => 
   return <div className="call-content">
     <RestoreAudioOutput notify={notify} />
     <IncomingAudio levels={levels} muted={deafened} />
-    <div className="call-overline"><span className={`connection-label ${state === ConnectionState.Connected ? 'good' : ''}`}><span className="live-dot" />{state === ConnectionState.Connected ? 'Подключено' : state === ConnectionState.Reconnecting || state === ConnectionState.SignalReconnecting ? 'Восстанавливаем связь…' : 'Подключаемся…'}</span><span>{participants.length} в комнате</span></div>
+    <div className="call-overline"><span className={`connection-label ${state === ConnectionState.Connected ? 'good' : ''}`}><span className="live-dot" />{state === ConnectionState.Connected ? 'Подключено' : state === ConnectionState.Reconnecting || state === ConnectionState.SignalReconnecting ? 'Восстанавливаем связь…' : 'Подключаемся…'}{state === ConnectionState.Connected && <span className="call-ping" title="Задержка до голосового сервера">{ping === null ? 'Пинг —' : `${ping} мс`}</span>}</span><span>{participants.length} в комнате</span></div>
     <div className="call-stage">
       {screens.map(track => <div className="screen-tile" key={track.publication.trackSid}><VideoTrack trackRef={track} /><div className="screen-caption"><MonitorUp size={15} /><span>Экран · {track.participant.name}</span><button className="icon-button" aria-label="На весь экран" onClick={e => void e.currentTarget.closest('.screen-tile')?.requestFullscreen().catch(() => notify('Полноэкранный режим недоступен.'))}><Maximize2 size={16} /></button></div></div>)}
       <div className={`people-grid ${screens.length ? 'with-screen' : ''}`}>{participants.map(p => {
@@ -104,5 +125,5 @@ export function Voice({ call, presence, onLeave, notify }: { call: Call; presenc
   const onError = useCallback(() => notify('Не удалось подключиться к медиасерверу. Проверьте соединение и попробуйте снова.'), [notify]);
   const onMediaDeviceFailure = useCallback(() => notify('Браузер не дал доступ к устройству. Можно остаться слушателем и включить микрофон позже.'), [notify]);
   if (!room) return <div className="call-content">Подключаемся…</div>;
-  return <LiveKitRoom room={room} token={call.token} serverUrl={call.url} connect audio={false} video={false} onDisconnected={onDisconnected} onError={onError} onMediaDeviceFailure={onMediaDeviceFailure}><CallContent onLeave={onLeave} notify={notify} channelId={call.channel.id} presence={presence} /></LiveKitRoom>;
+  return <LiveKitRoom room={room} token={call.token} serverUrl={call.url} connect audio={false} video={false} onDisconnected={onDisconnected} onError={onError} onMediaDeviceFailure={onMediaDeviceFailure}><CallContent room={room} onLeave={onLeave} notify={notify} channelId={call.channel.id} presence={presence} /></LiveKitRoom>;
 }
