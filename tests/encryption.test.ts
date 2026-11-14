@@ -13,12 +13,12 @@ import type { EncryptionDevice, EncryptionState, EncryptedEnvelope } from '../sr
 import { base64ToBytes, ciphertextHash, decryptBackup, decryptImage, encryptBackup, encryptImage, generateDeviceKey, openEnvelope, seal, sessionKeyFor, type SecretPayload } from '../src/e2ee-crypto.ts';
 
 const origin = 'http://localhost:5173', password = 'test-password-that-is-long', invite = 'test-bootstrap-invite-with-32-characters';
-const cfg = (path = ':memory:') => readConfig({ NODE_ENV: 'test', APP_ORIGIN: origin, DATABASE_PATH: path, LIVEKIT_API_KEY: 'test-api-key', LIVEKIT_API_SECRET: 'test-api-secret-long-enough-for-tests', BOOTSTRAP_INVITE: invite });
+const cfg = (path = ':memory:', mode: 'automatic' | 'manual' = 'automatic') => readConfig({ NODE_ENV: 'test', E2EE_MODE: mode, APP_ORIGIN: origin, DATABASE_PATH: path, LIVEKIT_API_KEY: 'test-api-key', LIVEKIT_API_SECRET: 'test-api-secret-long-enough-for-tests', BOOTSTRAP_INVITE: invite });
 type App = Awaited<ReturnType<typeof buildApp>>;
 const headers = (cookie: string) => ({ origin, cookie });
 const cookieOf = (r: { cookies: { name: string; value: string }[] }) => r.cookies.map(c => `${c.name}=${c.value}`).join('; ');
-async function appFor(t: { after: (fn: () => Promise<void>) => void }, media: Partial<MediaService> = {}, path?: string) {
-  const app = await buildApp(cfg(path), { async deleteRoom() {}, async removeParticipant() {}, async participants() { return {}; }, ...media });
+async function appFor(t: { after: (fn: () => Promise<void>) => void }, media: Partial<MediaService> = {}, path?: string, mode: 'automatic' | 'manual' = 'automatic') {
+  const app = await buildApp(cfg(path, mode), { async deleteRoom() {}, async removeParticipant() {}, async participants() { return {}; }, ...media });
   t.after(() => app.close()); return app;
 }
 async function register(app: App, username: string, admin?: string) {
@@ -41,13 +41,15 @@ test('server stores ciphertext only, rejects downgrade/replay/stale rosters and 
   const directory = mkdtempSync(join(tmpdir(), 'krug-e2ee-')); const path = join(directory, 'test.db');
   const app = await appFor(t, {}, path), owner = await register(app, 'owner'), friend = await register(app, 'friend', owner.cookie);
   const a = await device(app, owner.cookie), b = await device(app, friend.cookie);
+  assert.equal((await state(app, owner.cookie)).enabled, true);
+  assert.equal((await state(app, owner.cookie)).automatic, true);
   assert.equal((await app.inject({ url: '/api/encryption' })).statusCode, 401);
   assert.equal((await app.inject({ method: 'POST', url: '/api/encryption/enable', headers: headers(friend.cookie) })).statusCode, 403);
   assert.equal((await app.inject({ method: 'POST', url: '/api/encryption/enable', headers: headers(owner.cookie) })).statusCode, 200);
   const s = await state(app, owner.cookie), p = payload(a.device, s.roster, 'secret-only-on-clients');
   const envelope = await seal(p, a.privateKey, s.devices);
   const send = (cookie: string, body: object) => app.inject({ method: 'POST', url: '/api/channels/general/messages', headers: headers(cookie), payload: body });
-  assert.equal((await send(owner.cookie, { body: p.body })).statusCode, 400);
+  assert.equal((await send(owner.cookie, { body: p.body })).statusCode, 409);
   assert.equal((await send(friend.cookie, { encrypted: envelope })).statusCode, 403);
   const result = await send(owner.cookie, { encrypted: envelope }); assert.equal(result.statusCode, 201, result.body);
   assert.equal(result.json().message.body, ''); assert.ok(!result.body.includes(p.body));
@@ -65,6 +67,26 @@ test('server stores ciphertext only, rejects downgrade/replay/stale rosters and 
   assert.notEqual((await state(app, owner.cookie)).roster, s.roster);
   assert.equal((await send(owner.cookie, { encrypted: { ...envelope, clientId: crypto.randomUUID() } })).statusCode, 409);
   assert.equal((await app.inject({ url: '/api/encryption', headers: headers(friend.cookie) })).statusCode, 401);
+});
+
+test('automatic E2EE is the default and enables existing installations without deleting their old history or sessions', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'krug-auto-e2ee-')); const path = join(directory, 'test.db');
+  const media = { async deleteRoom() {}, async removeParticipant() {}, async participants() { return {}; } };
+  const old = await buildApp(cfg(path, 'manual'), media);
+  const owner = await register(old, 'owner');
+  const posted = await old.inject({ method: 'POST', url: '/api/channels/general/messages', headers: headers(owner.cookie), payload: { body: 'history before upgrade' } });
+  assert.equal(posted.statusCode, 201);
+  await old.close();
+  const defaults = readConfig({ ...cfg(path), E2EE_MODE: undefined } as unknown as NodeJS.ProcessEnv);
+  assert.equal(defaults.E2EE_MODE, 'automatic');
+  const upgraded = await buildApp(defaults, media);
+  t.after(async () => { await upgraded.close(); rmSync(directory, { recursive: true, force: true }); });
+  assert.equal((await state(upgraded, owner.cookie)).enabled, true);
+  const legacy = (await upgraded.inject({ url: '/api/encryption/legacy-history', headers: headers(owner.cookie) })).json();
+  assert.equal(legacy.remaining, 1);
+  assert.equal(legacy.messages[0].body, 'history before upgrade');
+  const rejected = await upgraded.inject({ method: 'POST', url: '/api/channels/general/messages', headers: headers(owner.cookie), payload: { body: 'old client sending plaintext' } });
+  assert.equal(rejected.statusCode, 409); assert.match(rejected.body, /Обновите приложение/);
 });
 
 test('new members receive the full old history through signed encrypted key grants without replacing original messages', async t => {
@@ -95,10 +117,13 @@ test('new members receive the full old history through signed encrypted key gran
 });
 
 test('legacy history migration preserves image bytes and message metadata, and cannot be performed by members', async t => {
-  const app = await appFor(t), owner = await register(app, 'owner'), friend = await register(app, 'friend', owner.cookie);
+  const app = await appFor(t, {}, undefined, 'manual'), owner = await register(app, 'owner'), friend = await register(app, 'friend', owner.cookie);
   const a = await device(app, owner.cookie), b = await device(app, friend.cookie);
   const raw = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
   const before = (await app.inject({ method: 'POST', url: '/api/channels/general/messages', headers: headers(friend.cookie), payload: { body: 'old message', image: raw } })).json().message;
+  assert.equal((await app.inject({ url: '/api/encryption/legacy-history', headers: headers(friend.cookie) })).statusCode, 403);
+  const legacy = (await app.inject({ url: '/api/encryption/legacy-history', headers: headers(owner.cookie) })).json();
+  assert.equal(legacy.remaining, 1); assert.equal(legacy.messages[0].id, before.id);
   await app.inject({ method: 'POST', url: '/api/encryption/enable', headers: headers(owner.cookie) });
   const s = await state(app, owner.cookie);
   const plain: SecretPayload = { ...payload(a.device, s.roster, before.body), migrationOf: before.id, originalAuthorId: before.user.id, originalCreatedAt: before.createdAt };
@@ -109,6 +134,7 @@ test('legacy history migration preserves image bytes and message metadata, and c
   assert.equal((await migrate(owner.cookie, false)).statusCode, 400);
   assert.equal((await migrate(owner.cookie)).statusCode, 200);
   assert.equal((await migrate(owner.cookie)).statusCode, 409);
+  assert.equal((await app.inject({ url: '/api/encryption/legacy-history', headers: headers(owner.cookie) })).json().remaining, 0);
   const after = (await app.inject({ url: '/api/channels/general/messages', headers: headers(friend.cookie) })).json().messages[0];
   assert.equal(after.body, ''); assert.equal(after.user.id, before.user.id); assert.equal(after.createdAt, before.createdAt);
   assert.equal((await openEnvelope(after.encrypted, [b.privateKey], a.device, context)).body, before.body);

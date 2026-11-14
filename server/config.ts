@@ -6,6 +6,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
   const raw = z.object({
     ...streamFields,
     NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+    E2EE_MODE: z.enum(['automatic', 'manual']).default('automatic'),
     HOST: z.string().default('127.0.0.1'),
     PORT: z.coerce.number().int().min(1).max(65535).default(3000),
     APP_ORIGIN: z.url().default('http://localhost:5173'),

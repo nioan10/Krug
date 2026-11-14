@@ -8,7 +8,7 @@ import { ApiError, digest } from './security.ts';
 import type { EncryptionDevice, EncryptedEnvelope } from '../src/crypto-types.ts';
 
 const envelopeSchema = z.object({ v: z.literal(1), deviceId: z.string().uuid(), clientId: z.string().uuid(), roster: z.string().regex(/^[a-f0-9]{64}$/), ciphertext: z.string().min(100).max(100_000).startsWith('-----BEGIN PGP MESSAGE-----') }).strict();
-export function registerEncryption(app: FastifyInstance, store: ReturnType<typeof openStore>, sessions: ReturnType<typeof sessionStore>, auth: (r: FastifyRequest) => Promise<void>, admin: (r: FastifyRequest) => Promise<void>, broadcast: (v: unknown) => void) {
+export function registerEncryption(app: FastifyInstance, store: ReturnType<typeof openStore>, sessions: ReturnType<typeof sessionStore>, auth: (r: FastifyRequest) => Promise<void>, admin: (r: FastifyRequest) => Promise<void>, broadcast: (v: unknown) => void, automatic = true) {
   const { db } = store;
   db.exec(`CREATE TABLE IF NOT EXISTS encryption_devices (
     id TEXT PRIMARY KEY, sessionHash TEXT NOT NULL UNIQUE, userId TEXT NOT NULL, label TEXT NOT NULL,
@@ -27,6 +27,8 @@ export function registerEncryption(app: FastifyInstance, store: ReturnType<typeo
   if (!columns.some(c => c.name === 'encrypted')) db.exec('ALTER TABLE messages ADD COLUMN encrypted TEXT');
   if (!columns.some(c => c.name === 'clientId')) db.exec('ALTER TABLE messages ADD COLUMN clientId TEXT');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS messages_client_id ON messages(clientId) WHERE clientId IS NOT NULL');
+  db.exec('CREATE INDEX IF NOT EXISTS messages_legacy_encryption ON messages(id) WHERE encrypted IS NULL');
+  if (automatic) db.prepare("INSERT INTO meta VALUES ('encryption.required','1') ON CONFLICT(key) DO UPDATE SET value='1'").run();
   const enabled = () => Boolean(db.prepare("SELECT 1 FROM meta WHERE key='encryption.required' AND value='1'").get());
   const devices = () => db.prepare(`SELECT d.id,d.userId,u.displayName AS name,d.label,d.publicKey,d.fingerprint,d.createdAt,d.identity
     FROM encryption_devices d JOIN sessions s ON s.hash=d.sessionHash JOIN users u ON u.id=d.userId
@@ -61,10 +63,15 @@ export function registerEncryption(app: FastifyInstance, store: ReturnType<typeo
   });
   app.get('/api/encryption', { preHandler: auth }, async req => {
     const current = db.prepare('SELECT id FROM encryption_devices WHERE sessionHash=?').get(req.sessionHash!) as { id: string } | undefined;
-    return { enabled: enabled(), roster: roster(), devices: devices().map(d => ({ ...d, current: d.id === current?.id })) };
+    return { enabled: enabled(), automatic, roster: roster(), devices: devices().map(d => ({ ...d, current: d.id === current?.id })) };
   });
   app.post('/api/encryption/enable', { preHandler: admin }, async req => {
     own(req); db.prepare("INSERT INTO meta VALUES ('encryption.required','1') ON CONFLICT(key) DO UPDATE SET value='1'").run(); changed(); return { ok: true };
+  });
+  app.get('/api/encryption/legacy-history', { preHandler: admin }, async () => {
+    const rows = db.prepare('SELECT id FROM messages WHERE encrypted IS NULL ORDER BY id LIMIT 20').all() as { id: number }[];
+    const { remaining } = db.prepare('SELECT COUNT(*) AS remaining FROM messages WHERE encrypted IS NULL').get() as { remaining: number };
+    return { remaining, messages: rows.map(row => store.message(row.id)) };
   });
   app.post('/api/encryption/devices', { preHandler: auth, bodyLimit: 24_000, config: { rateLimit: { max: 8, timeWindow: '1 minute' } } }, async req => {
     const input = z.object({ publicKey: z.string().max(16_000).startsWith('-----BEGIN PGP PUBLIC KEY BLOCK-----'), label: z.string().trim().min(1).max(80) }).strict().parse(req.body);

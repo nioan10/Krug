@@ -1,20 +1,23 @@
 import { readPrivateKey } from 'openpgp';
-import { api, HttpError, type Message, type User } from './api';
+import { api, errorText, HttpError, type Message, type User } from './api';
 import type { EncryptedEnvelope, EncryptionDevice, EncryptionState } from './crypto-types';
 import { base64ToBytes, bytesToBase64, ciphertextHash, sessionKeyFor, decryptBackup, decryptImage, encryptBackup, encryptImage, generateDeviceKey, openEnvelope, seal, type SecretPayload } from './e2ee-crypto';
 import { loadVault, saveVault, type Vault } from './e2ee-vault';
+import { acceptDeviceKeys, mergePins } from './e2ee-trust';
 
 const locks = <T>(name: string, work: () => Promise<T>) => {
   if (!navigator.locks) throw Error('Этот браузер не поддерживает безопасное хранилище Круга. Обновите приложение.');
   return navigator.locks.request(`krug-e2ee-${name}`, work);
 };
 export class EncryptionManager extends EventTarget {
-  state: EncryptionState = { enabled: false, roster: '', devices: [] };
+  state: EncryptionState = { enabled: false, automatic: false, roster: '', devices: [] };
   private vault!: Vault;
   private publicDevices = new Map<string, EncryptionDevice>();
   private recovered = new Map<number, { key: string; sender: EncryptionDevice }>();
   private sharing = false;
   historyShared = 0;
+  historyMigration = { remaining: null as number | null, processed: 0, running: false, error: '' };
+  private maintaining = false;
   private stopped = false;
   private opening = new Map<string, Promise<SecretPayload>>();
   constructor(readonly user: User, readonly sessionId: string) { super(); }
@@ -22,6 +25,16 @@ export class EncryptionManager extends EventTarget {
   private async mutate(work: (vault: Vault) => void) {
     await locks(this.user.id, async () => { const next = await loadVault(this.user.id); work(next); await saveVault(next); this.vault = next; });
     this.opening.clear(); this.notify();
+  }
+  private async remember(devices: EncryptionDevice[]) {
+    let changed = false;
+    await locks(this.user.id, async () => {
+      const next = await loadVault(this.user.id);
+      changed = await acceptDeviceKeys(next, devices);
+      if (changed) await saveVault(next);
+      this.vault = next;
+    });
+    if (changed) { this.opening.clear(); this.notify(); }
   }
   async initialize() {
     await locks(this.user.id, async () => {
@@ -40,7 +53,8 @@ export class EncryptionManager extends EventTarget {
       }
       const { device } = await api<{ device: EncryptionDevice }>('/encryption/devices', 'POST', { publicKey: record.device.publicKey, label: record.device.label });
       if (device.fingerprint !== record.device.fingerprint || device.userId !== this.user.id) throw Error('Ключ устройства подменён сервером.');
-      record.device = device; this.vault.trusted[device.id] = device.fingerprint;
+      record.device = device; mergePins(this.vault, { [device.id]: device.fingerprint });
+      (this.vault.verified ??= {})[device.id] = device.fingerprint;
       await saveVault(this.vault);
     });
     await this.refresh(); return this;
@@ -48,27 +62,29 @@ export class EncryptionManager extends EventTarget {
   get current() { const record = this.vault.records.find(r => r.sessionId === this.sessionId); if (!record) throw Error('Нет ключа текущей сессии.'); return record; }
   get pending() { return this.state.devices.filter(d => !this.trusted(d)); }
   trusted(device: EncryptionDevice) { return this.vault.trusted[device.id] === device.fingerprint; }
+  verified(device: EncryptionDevice) { return this.vault.verified?.[device.id] === device.fingerprint; }
   async trust(id: string, fingerprint: string) {
     await this.refresh(); const device = this.state.devices.find(d => d.id === id);
     if (!device || device.fingerprint !== fingerprint.replace(/\s/g, '').toLowerCase()) throw Error('Отпечаток не совпадает. Получите код непосредственно у владельца устройства.');
-    await this.mutate(vault => { vault.trusted[id] = device.fingerprint; });
-    void this.shareHistory();
+    await this.mutate(vault => { mergePins(vault, { [id]: device.fingerprint }); (vault.verified ??= {})[id] = device.fingerprint; });
+    void this.maintainHistory();
   }
   async refresh() {
     const state = await api<EncryptionState>('/encryption');
     const vault = await loadVault(this.user.id); const trustChanged = JSON.stringify(vault.trusted) !== JSON.stringify(this.vault.trusted); this.vault = vault;
     if (vault.enabled && !state.enabled) throw Error('Сервер пытается отключить ранее включённое шифрование. Отправка остановлена.');
     if (!state.devices.some(d => d.id === this.current.device.id && d.fingerprint === this.current.device.fingerprint && d.current)) throw Error('Ключ этой сессии больше не активен.');
+    await this.remember(state.devices);
     if (state.enabled && !vault.enabled) await this.mutate(v => { v.enabled = true; });
     for (const d of state.devices) this.publicDevices.set(d.id, d);
-    if (trustChanged || JSON.stringify(state) !== JSON.stringify(this.state)) { this.state = state; this.opening.clear(); this.notify(); setTimeout(() => void this.shareHistory(), 0); }
+    if (trustChanged || JSON.stringify(state) !== JSON.stringify(this.state)) { this.state = state; this.opening.clear(); this.notify(); setTimeout(() => void this.maintainHistory(), 0); }
     return state;
   }
   async enable() { await api('/encryption/enable', 'POST'); await this.refresh(); }
   private async recipients() {
     await this.refresh();
     if (!this.state.enabled) throw Error('Сквозное шифрование не включено.');
-    if (this.pending.length) throw Error(`Подтвердите ключи устройств в настройках: ${[...new Set(this.pending.map(d => d.name))].join(', ')}.`);
+    if (this.pending.length) throw Error('Не удалось проверить ключи устройств. Повторите попытку после обновления приложения.');
     return this.state.devices;
   }
   private payload(kind: SecretPayload['kind'], channelId: string): SecretPayload {
@@ -84,7 +100,8 @@ export class EncryptionManager extends EventTarget {
   }
   private async sender(id: string) {
     const device = this.publicDevices.get(id) ?? (await api<{ device: EncryptionDevice }>(`/encryption/devices/${id}`)).device;
-    if (device.id !== id || !this.trusted(device)) throw Error('Ключ отправителя не подтверждён. Сверьте его в настройках.');
+    if (device.id !== id) throw Error('Ключ отправителя подменён.');
+    await this.remember([device]);
     this.publicDevices.set(id, device); return device;
   }
   private async open(envelope: EncryptedEnvelope, channelId: string, kind: SecretPayload['kind']) {
@@ -112,7 +129,9 @@ export class EncryptionManager extends EventTarget {
           if (!grant || grant.messageId !== message.id || grant.ciphertextHash !== await ciphertextHash(message.encrypted)) continue;
           const pin = this.vault.trusted[grant.sender.id];
           if (pin && pin !== grant.sender.fingerprint) continue;
-          restored = await openEnvelope(message.encrypted, [], grant.sender, { origin: location.origin, channelId: message.channelId, kind: 'message' }, base64ToBytes(grant.key));
+          const candidate = await openEnvelope(message.encrypted, [], grant.sender, { origin: location.origin, channelId: message.channelId, kind: 'message' }, base64ToBytes(grant.key));
+          await this.remember([grant.sender]);
+          restored = candidate;
           this.recovered.set(message.id, { key: grant.key, sender: grant.sender });
           if (this.recovered.size > 250) this.recovered.delete(this.recovered.keys().next().value!);
           break;
@@ -129,7 +148,7 @@ export class EncryptionManager extends EventTarget {
   historyChanged() { this.opening.clear(); this.notify(); }
   stop() { this.stopped = true; this.opening.clear(); this.recovered.clear(); }
   async shareHistory(retry = false) {
-    if (this.stopped || this.sharing || !this.state.enabled || this.pending.length) return;
+    if (this.stopped || this.sharing || this.historyMigration.running || !this.state.enabled || this.pending.length) return;
     this.sharing = true;
     const initialRoster = this.state.roster;
     let after = 0;
@@ -151,11 +170,46 @@ export class EncryptionManager extends EventTarget {
             await api(`/messages/${message.id}/key-grants`, 'POST', envelope);
             this.historyShared++; this.notify();
           } catch (e) { if (e instanceof HttpError && [401, 409, 429].includes(e.status)) return; }
-          await new Promise(resolve => setTimeout(resolve, 650));
+          await new Promise(resolve => setTimeout(resolve, 1200));
         }
+        if (!retry) break;
       }
     } catch { /* Reconnect/confirmation retries the transfer; ciphertext remains intact. */ }
     finally { this.sharing = false; }
+  }
+  async maintainHistory() {
+    if (this.stopped || this.maintaining || !this.state.enabled || this.pending.length) return;
+    this.maintaining = true;
+    try {
+      await navigator.locks.request(`krug-e2ee-history-${this.user.id}`, { ifAvailable: true }, async lock => {
+        if (!lock || this.stopped) return;
+        if (this.state.automatic && this.user.role === 'admin') await this.migrateHistory();
+        await this.shareHistory();
+      });
+    } catch { /* Retry when the app reconnects or on the next maintenance tick. */ }
+    finally { this.maintaining = false; }
+  }
+  async migrateHistory() {
+    if (this.stopped || this.sharing || this.historyMigration.running || !this.state.enabled || this.pending.length || this.user.role !== 'admin') return;
+    this.historyMigration = { ...this.historyMigration, running: true, error: '' };
+    try {
+      const page = await api<{ remaining: number; messages: Message[] }>('/encryption/legacy-history');
+      this.historyMigration.remaining = page.remaining; this.notify();
+      for (const message of page.messages) {
+        if (this.stopped) break;
+        try {
+          await this.migrateMessage(message);
+          this.historyMigration.processed++;
+          this.historyMigration.remaining = Math.max(0, this.historyMigration.remaining! - 1);
+          this.notify();
+        } catch (e) {
+          // Another owner device may have migrated/deleted this record first.
+          if (!(e instanceof HttpError && [404, 409].includes(e.status))) throw e;
+        }
+        await new Promise(resolve => setTimeout(resolve, 1400));
+      }
+    } catch (e) { this.historyMigration.error = errorText(e); }
+    finally { this.historyMigration.running = false; this.notify(); }
   }
   async image(message: Message, payload: SecretPayload) {
     if (!payload.image) throw Error('Нет изображения.');
@@ -190,20 +244,24 @@ export class EncryptionManager extends EventTarget {
       if (key.getFingerprint() !== record.device.fingerprint || record.device.userId !== this.user.id) throw Error('Копия содержит некорректный ключ.');
     }
     await this.mutate(vault => {
+      mergePins(vault, data.vault.trusted);
       for (const record of data.vault.records) if (!vault.records.some(r => r.device.fingerprint === record.device.fingerprint)) vault.records.push({ ...record, sessionId: `archive:${record.device.id}` });
-      for (const [id, fingerprint] of Object.entries(data.vault.trusted)) if (/^[a-f0-9]{40,64}$/.test(fingerprint)) vault.trusted[id] = fingerprint;
+      for (const [id, fingerprint] of Object.entries(data.vault.verified ?? data.vault.trusted)) if (vault.trusted[id] === fingerprint) (vault.verified ??= {})[id] = fingerprint;
       vault.enabled ||= Boolean(data.vault.enabled);
     });
     await this.refresh();
+  }
+  private async migrateMessage(message: Message) {
+    let image;
+    if (message.image) { const response = await fetch(`/api/messages/${message.id}/image`, { credentials: 'same-origin', cache: 'no-store' }); if (!response.ok) throw Error('Не удалось прочитать старое изображение.'); image = { bytes: new Uint8Array(await response.arrayBuffer()), mime: response.headers.get('Content-Type')?.split(';')[0] || '' }; }
+    await api(`/messages/${message.id}/encryption`, 'PUT', await this.encryptMessage(message.channelId, message.body, image, message));
   }
   async migrate(channelId: string, progress: (count: number) => void) {
     let before: number | undefined, count = 0;
     do {
       const page = await api<{ messages: Message[]; hasMore: boolean }>(`/channels/${channelId}/messages${before ? `?before=${before}` : ''}`);
       for (const message of page.messages) if (!message.encrypted) {
-        let image;
-        if (message.image) { const response = await fetch(`/api/messages/${message.id}/image`, { credentials: 'same-origin', cache: 'no-store' }); if (!response.ok) throw Error('Не удалось прочитать старое изображение.'); image = { bytes: new Uint8Array(await response.arrayBuffer()), mime: response.headers.get('Content-Type')?.split(';')[0] || '' }; }
-        await api(`/messages/${message.id}/encryption`, 'PUT', await this.encryptMessage(channelId, message.body, image, message));
+        await this.migrateMessage(message);
         progress(++count);
       }
       before = page.hasMore ? page.messages[0]?.id : undefined;

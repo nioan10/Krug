@@ -14,7 +14,7 @@ import { digest, hashPassword, verifyPassword } from '../server/security.ts';
 const origin = 'http://localhost:5173';
 const bootstrap = 'test-only-bootstrap-invite-32-characters-long';
 const password = 'Testing-a-long-password-123!';
-const config = (path = ':memory:') => readConfig({ NODE_ENV: 'test', APP_ORIGIN: origin, DATABASE_PATH: path, LIVEKIT_API_KEY: 'test-api-key', LIVEKIT_API_SECRET: 'test-api-secret-long-enough-for-tests', BOOTSTRAP_INVITE: bootstrap });
+const config = (path = ':memory:') => readConfig({ NODE_ENV: 'test', E2EE_MODE: 'manual', APP_ORIGIN: origin, DATABASE_PATH: path, LIVEKIT_API_KEY: 'test-api-key', LIVEKIT_API_SECRET: 'test-api-secret-long-enough-for-tests', BOOTSTRAP_INVITE: bootstrap });
 const buildApp = (cfg: ReturnType<typeof config>, media: Partial<MediaService> = {}) => createApp(cfg, { async deleteRoom() {}, async participants() { return {}; }, async removeParticipant() {}, ...media });
 type App = Awaited<ReturnType<typeof buildApp>>;
 const headers = (cookie = '') => ({ origin, cookie });

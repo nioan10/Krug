@@ -11,7 +11,7 @@ import { readConfig } from '../server/config.ts';
 import type { MediaService } from '../server/media.ts';
 
 const origin = 'http://localhost:5173', password = 'test-password-that-is-long', invite = 'test-bootstrap-invite-with-32-characters';
-const cfg = (path = ':memory:') => readConfig({ NODE_ENV: 'test', APP_ORIGIN: origin, DATABASE_PATH: path, LIVEKIT_API_KEY: 'test-api-key', LIVEKIT_API_SECRET: 'test-api-secret-long-enough-for-tests', BOOTSTRAP_INVITE: invite });
+const cfg = (path = ':memory:') => readConfig({ NODE_ENV: 'test', E2EE_MODE: 'manual', APP_ORIGIN: origin, DATABASE_PATH: path, LIVEKIT_API_KEY: 'test-api-key', LIVEKIT_API_SECRET: 'test-api-secret-long-enough-for-tests', BOOTSTRAP_INVITE: invite });
 type App = Awaited<ReturnType<typeof buildApp>>;
 const headers = (cookie: string) => ({ origin, cookie });
 const cookieOf = (r: { cookies: { name: string; value: string }[] }) => r.cookies.map(c => `${c.name}=${c.value}`).join('; ');

@@ -63,6 +63,7 @@
 .encryption-device { padding:12px; border:1px solid var(--border, #333d2c); border-radius:10px; }
 .encryption-device code { display:block; word-break:break-all; font-size:12px; margin:8px 0; }
 .encryption-device small { color:var(--muted, #939c90); }
+.encryption-verification{border:1px solid #34432d;border-radius:10px;padding:13px}.encryption-verification summary{cursor:pointer;font-size:12px;line-height:1.5;color:#b9c9ad}.encryption-verification summary:focus-visible{outline:2px solid var(--accent);outline-offset:4px}.encryption-verification[open] summary{margin-bottom:18px}
 
 .settings-tabs{display:flex;gap:6px;padding:5px;background:#121812;border:1px solid #34402e;border-radius:10px;margin-bottom:24px}
 .settings-tabs button{flex:1;display:flex;align-items:center;justify-content:center;gap:7px;padding:11px 8px;min-height:44px;background:transparent;color:#a7b69f;border-radius:7px;font-size:12px}

@@ -220,7 +220,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     if (!selected) throw new ApiError(404, 'Сессия не найдена.');
     return revokeSessions(req.user!.id, [selected.hash]);
   });
-  const encryption = registerEncryption(app, store, sessions, auth, admin, broadcast);
+  const encryption = registerEncryption(app, store, sessions, auth, admin, broadcast, config.E2EE_MODE === 'automatic');
 
   app.get('/api/health', async () => ({ status: 'ok' }));
   app.post('/api/auth/register', { config: authRate }, async (req, reply) => {
@@ -465,6 +465,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
   app.post('/api/channels/:id/messages', { preHandler: auth, bodyLimit: 7 * 1024 * 1024, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req, reply) => {
     const id = channelId(req); requireChannel(id);
     if (encryption.enabled()) {
+      if (!req.body || typeof req.body !== 'object' || !('encrypted' in req.body)) throw new ApiError(409, 'Обновите приложение: теперь сообщения отправляются только со сквозным шифрованием.');
       const input = z.object({ encrypted: z.unknown(), image: z.string().optional() }).strict().parse(req.body);
       const envelope = encryption.validate(req, input.encrypted), attachment = encryption.cipherImage(input.image);
       if (db.prepare('SELECT 1 FROM messages WHERE clientId=?').get(envelope.clientId)) throw new ApiError(409, 'Это сообщение уже отправлено.');

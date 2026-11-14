@@ -1,5 +1,5 @@
 import type { EncryptionDevice } from './crypto-types';
-export type Vault = { version: 1; userId: string; records: { sessionId: string; device: EncryptionDevice; privateKey: string }[]; trusted: Record<string, string>; enabled: boolean };
+export type Vault = { version: 1; userId: string; records: { sessionId: string; device: EncryptionDevice; privateKey: string }[]; trusted: Record<string, string>; verified?: Record<string, string>; enabled: boolean };
 function database(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open('krug-encryption-v1', 1);
@@ -14,9 +14,12 @@ async function read(userId: string) {
 }
 export async function loadVault(userId: string): Promise<Vault> {
   const record = await read(userId);
-  if (!record) return { version: 1, userId, records: [], trusted: {}, enabled: false };
+  if (!record) return { version: 1, userId, records: [], trusted: {}, verified: {}, enabled: false };
   const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: record.iv, additionalData: new TextEncoder().encode(userId) }, record.key, record.data);
-  return JSON.parse(new TextDecoder().decode(plain));
+  const vault = JSON.parse(new TextDecoder().decode(plain)) as Vault;
+  // Pins written before automatic trust were explicitly confirmed (or own keys).
+  vault.verified ??= { ...vault.trusted };
+  return vault;
 }
 export async function saveVault(vault: Vault) {
   const previous = await read(vault.userId);
