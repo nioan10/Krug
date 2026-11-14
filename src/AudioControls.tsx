@@ -1,15 +1,33 @@
 import { participantUserId } from './participant-user';
-import { useEffect, useId, useRef, useState } from 'react';
-import { AudioTrack, useLocalParticipant, useRoomContext, useTracks } from '@livekit/components-react';
-import { LocalAudioTrack, Track } from 'livekit-client';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { AudioTrack, useLocalParticipant, useRoomContext, useTracks, type TrackReference } from '@livekit/components-react';
+import { LocalAudioTrack, RemoteAudioTrack, Track } from 'livekit-client';
 import { Mic } from 'lucide-react';
 import { incomingLevel, level, type AudioLevels } from './audio-levels';
 import { MicrophoneGain } from './MicrophoneGain';
+import { IncomingGain } from './IncomingGain';
+
+function ControlledAudio({ trackRef, volume, muted }: { trackRef: TrackReference; volume: number; muted: boolean }) {
+  const room = useRoomContext();
+  const context = typeof room.options.webAudioMix === 'object' ? room.options.webAudioMix.audioContext : undefined;
+  const track = trackRef.publication.track;
+  const gain = useRef<IncomingGain | null>(null);
+  const effective = muted ? 0 : volume;
+  const latest = useRef(effective); latest.current = effective;
+  useLayoutEffect(() => {
+    if (!context || !(track instanceof RemoteAudioTrack)) return;
+    const controller = new IncomingGain(track, context, latest.current);
+    gain.current = controller;
+    return () => { gain.current = null; controller.close(); };
+  }, [context, track]);
+  useLayoutEffect(() => { gain.current?.setLevel(effective); }, [effective]);
+  return <AudioTrack trackRef={trackRef} volume={context ? undefined : Math.min(1, effective)} muted={effective === 0} />;
+}
 
 export function IncomingAudio({ levels, muted }: { levels: AudioLevels; muted: boolean }) {
   const tracks = useTracks([Track.Source.Microphone, Track.Source.ScreenShareAudio, Track.Source.Unknown], { onlySubscribed: true, updateOnlyOn: [] })
     .filter(ref => !ref.participant.isLocal && ref.publication.kind === Track.Kind.Audio);
-  return <div hidden>{tracks.map(trackRef => <AudioTrack key={trackRef.publication.trackSid} trackRef={trackRef} volume={incomingLevel(levels, participantUserId(trackRef.participant), trackRef.source === Track.Source.ScreenShareAudio ? trackRef.participant.identity : undefined)} muted={muted} />)}</div>;
+  return <div hidden>{tracks.map(trackRef => <ControlledAudio key={trackRef.publication.trackSid} trackRef={trackRef} volume={incomingLevel(levels, participantUserId(trackRef.participant), trackRef.source === Track.Source.ScreenShareAudio ? trackRef.participant.identity : undefined)} muted={muted} />)}</div>;
 }
 
 export function VolumeSlider({ label, value, max = 2, onChange }: { label: string; value: number; max?: number; onChange: (value: number) => void }) {

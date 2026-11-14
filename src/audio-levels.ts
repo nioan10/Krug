@@ -28,5 +28,7 @@ export function saveAudioLevels(levels: AudioLevels) {
 }
 // Session identities keep two simultaneous shares from the same account independent.
 export const screenLevel = (levels: AudioLevels, identity: string, userId: string) => level(levels.screens[identity] ?? levels.screenDefaults[userId], 2);
+// Give the lower half of the voice slider useful attenuation; amplification above 100% stays linear.
+export function voiceGain(value: number) { const bounded = level(value, 2); return bounded < 1 ? bounded * bounded : bounded; }
 export const incomingLevel = (levels: AudioLevels, userId: string, screenIdentity?: string) => level(levels.master, 2) *
-  (screenIdentity === undefined ? level(levels.participants[userId], 2) : screenLevel(levels, screenIdentity, userId));
+  (screenIdentity === undefined ? voiceGain(level(levels.participants[userId], 2)) : screenLevel(levels, screenIdentity, userId));
