@@ -36,3 +36,4 @@
 *::-webkit-scrollbar-thumb{background:#44563b;border:2px solid #192019;border-radius:8px}
 *::-webkit-scrollbar-thumb:hover{background:#708a5c}
 *::-webkit-scrollbar-corner{background:#192019}
+.room-occupants .occupant-name{flex:1;min-width:0}.occupant-states,.person-states{display:flex;align-items:center;gap:4px;flex-shrink:0}.occupant-states span,.person-states span{display:grid;place-items:center}.voice-state-on{color:#95b083}.voice-state-off{color:#e0a79d}.voice-state-unknown{color:#66745f}.person-states{position:absolute;right:12px;bottom:12px;gap:5px}.person-states span{width:27px;height:27px;border-radius:8px;background:#202b1ccc}.person-states .voice-state-off{background:#472b29e8}.camera-tile .person-states{z-index:1}

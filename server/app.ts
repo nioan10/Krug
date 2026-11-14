@@ -33,6 +33,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
   const attempts = new Map<string, { count: number; expires: number }>();
   const updateTokens = new Map<string, { expires: number; migrationAware: boolean }>();
   const sessionTransfers = createSessionTransfers();
+  const voiceAudioStates = new Map<string, { channelId: string; deafened: boolean; expiresAt: number }>();
   const deletingChannels = new Set<string>();
   const dummy = await hashPassword(newSecret());
   const sessionCookie = config.NODE_ENV === 'production' ? '__Host-krug' : 'krug_session';
@@ -104,7 +105,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
   };
   const requireChannel = (id: string) => { const channel = store.channel(id); if (!channel) throw new ApiError(404, 'Канал не найден.'); if (deletingChannels.has(id)) throw new ApiError(409, 'Канал удаляется.'); return channel; };
   const authRate = { rateLimit: { max: 12, timeWindow: '15 minutes' } };
-  let voicePresence: { rooms: Record<string, User[]>; available: boolean } = { rooms: {}, available: false };
+  let voicePresence: { rooms: Record<string, (User & { microphoneEnabled: boolean; deafened: boolean | null })[]>; available: boolean } = { rooms: {}, available: false };
   let presenceRequest: Promise<void> | undefined;
   let presenceCheckedAt = 0;
   let closing = false;
@@ -117,7 +118,12 @@ export async function buildApp(config: Config, media: MediaService = createMedia
       try {
         const occupants = await media.participants(store.channels().filter(channel => channel.kind === 'voice').map(channel => channel.id));
         const rooms = Object.fromEntries(store.channels().filter(channel => channel.kind === 'voice' && !deletingChannels.has(channel.id)).map(channel => [channel.id,
-          [...new Set(occupants[channel.id] ?? [])].sort().map(id => store.publicUser(id)).filter((user): user is User => Boolean(user)),
+          [...new Map((occupants[channel.id] ?? []).map(person => [person.identity, person])).values()].sort((a, b) => a.identity.localeCompare(b.identity)).flatMap(person => {
+            const user = store.publicUser(person.identity);
+            const audioState = voiceAudioStates.get(person.identity);
+            const deafened = audioState && audioState.channelId === channel.id && audioState.expiresAt > Date.now() ? audioState.deafened : null;
+            return user ? [{ ...user, microphoneEnabled: person.microphoneEnabled, deafened }] : [];
+          }),
         ]));
         next = { rooms, available: true };
       } catch {
@@ -252,6 +258,14 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     return { ok: true };
   });
   app.get('/api/voice-presence', { preHandler: auth }, async () => { await refreshVoicePresence(); return voicePresence; });
+  app.post('/api/voice-state', { preHandler: auth }, async req => {
+    const { channelId: id, deafened } = z.object({ channelId: z.string().min(1).max(64), deafened: z.boolean() }).parse(req.body);
+    const channel = requireChannel(id);
+    if (channel.kind !== 'voice') throw new ApiError(400, 'Это текстовый канал.');
+    voiceAudioStates.set(req.user!.id, { channelId: id, deafened, expiresAt: Date.now() + 30_000 });
+    void refreshVoicePresence();
+    return { ok: true };
+  });
   app.post('/api/channels', { preHandler: admin }, async (req, reply) => {
     const input = z.object({ name: z.string().trim().min(1).max(32), kind: z.enum(['text', 'voice']), description: z.string().trim().max(120).default('') }).parse(req.body);
     if (store.channels().length >= 40) throw new ApiError(409, 'Можно создать до 40 каналов.');
@@ -359,6 +373,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
       state.alive = false; socket.ping();
     }
     for (const [key, value] of attempts) if (value.expires < Date.now()) attempts.delete(key);
+    for (const [key, value] of voiceAudioStates) if (value.expiresAt <= Date.now()) voiceAudioStates.delete(key);
     store.cleanup();
   }, 30_000);
   heartbeat.unref();

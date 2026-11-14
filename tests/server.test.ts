@@ -141,7 +141,7 @@ test('voice tokens are scoped to a real voice room and short-lived', async t => 
   const response = await app.inject({ method: 'POST', url: '/api/channels/lounge/voice-token', headers: headers(admin) });
   assert.equal(response.statusCode, 200);
   const claims = await new TokenVerifier(cfg.LIVEKIT_API_KEY, cfg.LIVEKIT_API_SECRET).verify(response.json().token);
-  assert.equal(claims.video?.room, 'lounge'); assert.equal(claims.video?.roomJoin, true); assert.equal(claims.video?.roomAdmin, undefined); assert.equal(claims.video?.canPublishData, false);
+  assert.equal(claims.video?.room, 'lounge'); assert.equal(claims.video?.roomJoin, true); assert.equal(claims.video?.roomAdmin, undefined); assert.equal(claims.video?.canPublishData, false); assert.equal(claims.video?.canUpdateOwnMetadata, false);
   const raw = JSON.parse(Buffer.from(response.json().token.split('.')[1], 'base64url').toString());
   assert.ok(raw.exp - Math.floor(Date.now() / 1000) <= 120);
 });
@@ -251,14 +251,16 @@ test('an empty channel list survives a restart', async t => {
 });
 
 test('room presence reports media participants, deduplicates users and updates connected clients', async t => {
-  let identities: string[] = []; let calls = 0;
+  let identities: { identity: string; microphoneEnabled: boolean }[] = []; let calls = 0;
   const app = await buildApp(config(), { async participants(ids) { calls++; assert.ok(ids.includes('lounge')); assert.ok(!ids.includes('general')); return { lounge: identities, unknown: identities }; } });
   t.after(() => app.close()); const admin = await owner(app); const regular = await member(app, admin);
   const friend = (await app.inject({ url: '/api/me', headers: headers(regular) })).json().user;
   assert.equal((await app.inject('/api/voice-presence')).statusCode, 401);
-  identities = [friend.id, friend.id, 'unknown-user'];
+  identities = [{ identity: friend.id, microphoneEnabled: false }, { identity: friend.id, microphoneEnabled: false }, { identity: 'unknown-user', microphoneEnabled: false }];
+  assert.equal((await app.inject({ method: 'POST', url: '/api/voice-state', headers: headers(regular), payload: { channelId: 'lounge', deafened: true } })).statusCode, 200);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/voice-state', headers: headers(), payload: { channelId: 'lounge', deafened: true } })).statusCode, 401);
   const first = (await app.inject({ url: '/api/voice-presence', headers: headers(admin) })).json();
-  assert.equal(first.available, true); assert.deepEqual(first.rooms.lounge, [friend]); assert.equal(first.rooms.unknown, undefined);
+  assert.equal(first.available, true); assert.deepEqual(first.rooms.lounge, [{ ...friend, microphoneEnabled: false, deafened: true }]); assert.equal(first.rooms.unknown, undefined);
   await app.inject({ url: '/api/voice-presence', headers: headers(admin) }); assert.equal(calls, 1);
   const socket = await app.injectWS('/api/events', { socket: testSocket, headers: headers(admin) }); t.after(() => socket.terminate());
   identities = [];

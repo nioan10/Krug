@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { LiveKitRoom, TrackToggle, useParticipants, useTracks, VideoTrack, useIsSpeaking, useConnectionState, StartAudio } from '@livekit/components-react';
-import { Room, Track, ConnectionState, type Participant, type RoomOptions } from 'livekit-client';
+import { Room, Track, ConnectionState, ParticipantEvent, type Participant, type RoomOptions } from 'livekit-client';
 import { Headphones, HeadphoneOff, Mic, MicOff, MonitorUp, PhoneOff, Settings2, Video, Maximize2, Radio, Volume2 } from 'lucide-react';
 import { Avatar, Modal } from './ui';
 import { IncomingAudio, MicrophoneToggle, VolumeSlider } from './AudioControls';
 import { loadAudioLevels, saveAudioLevels } from './audio-levels';
 import { DeviceSettings } from './DeviceSettings';
 import { RestoreAudioOutput } from './AudioOutput';
-import type { Channel } from './api';
+import { api, type Channel, type VoiceOccupant } from './api';
 import { DesktopShare } from './DesktopShare';
 
 export type Call = { channel: Channel; token: string; url: string };
@@ -16,15 +16,34 @@ const options: RoomOptions = {
   audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
   videoCaptureDefaults: { resolution: { width: 1280, height: 720, frameRate: 30 } },
 };
-function Person({ participant, onVolume }: { participant: Participant; onVolume: () => void }) {
-  const speaking = useIsSpeaking(participant);
-  return <div className={`person-tile ${speaking ? 'speaking' : ''}`}><Avatar name={participant.name || participant.identity} size="large" /><span className="person-name">{participant.name || 'Участник'}{participant.isLocal && <small>вы</small>}</span><span className="mic-state">{participant.isMicrophoneEnabled ? <Mic size={15} /> : <MicOff size={15} />}</span><button className="participant-volume icon-button" title={participant.isLocal ? 'Громкость микрофона' : `Громкость: ${participant.name || participant.identity}`} aria-label={participant.isLocal ? 'Громкость микрофона' : `Громкость: ${participant.name || participant.identity}`} onClick={onVolume}><Volume2 size={16} /></button>{speaking && <span className="speaking-label">Говорит</span>}</div>;
+function VoiceStatus({ participant, deafened }: { participant: Participant; deafened: boolean | null }) {
+  const [microphoneEnabled, setMicrophoneEnabled] = useState(participant.isMicrophoneEnabled);
+  useEffect(() => {
+    const update = () => setMicrophoneEnabled(participant.isMicrophoneEnabled);
+    const events = [ParticipantEvent.TrackMuted, ParticipantEvent.TrackUnmuted, ParticipantEvent.TrackPublished, ParticipantEvent.TrackUnpublished, ParticipantEvent.LocalTrackPublished, ParticipantEvent.LocalTrackUnpublished] as const;
+    for (const event of events) participant.on(event, update);
+    update(); return () => { for (const event of events) participant.off(event, update); };
+  }, [participant]);
+  const micLabel = microphoneEnabled ? 'Микрофон включён' : 'Микрофон выключен';
+  const audioLabel = deafened === null ? 'Состояние звука неизвестно' : deafened ? 'Входящий звук выключен' : 'Входящий звук включён';
+  return <div className="person-states"><span role="img" className={microphoneEnabled ? 'voice-state-on' : 'voice-state-off'} title={micLabel} aria-label={micLabel}>{microphoneEnabled ? <Mic size={15} /> : <MicOff size={15} />}</span><span role="img" className={deafened === null ? 'voice-state-unknown' : deafened ? 'voice-state-off' : 'voice-state-on'} title={audioLabel} aria-label={audioLabel}>{deafened ? <HeadphoneOff size={15} /> : <Headphones size={15} />}</span></div>;
 }
-function CallContent({ onLeave, notify }: { onLeave: () => void; notify: (message: string) => void }) {
+function Person({ participant, onVolume, deafened }: { participant: Participant; onVolume: () => void; deafened: boolean | null }) {
+  const speaking = useIsSpeaking(participant);
+  return <div className={`person-tile ${speaking ? 'speaking' : ''}`}><Avatar name={participant.name || participant.identity} size="large" /><span className="person-name">{participant.name || 'Участник'}{participant.isLocal && <small>вы</small>}</span><VoiceStatus participant={participant} deafened={deafened} /><button className="participant-volume icon-button" title={participant.isLocal ? 'Громкость микрофона' : `Громкость: ${participant.name || participant.identity}`} aria-label={participant.isLocal ? 'Громкость микрофона' : `Громкость: ${participant.name || participant.identity}`} onClick={onVolume}><Volume2 size={16} /></button>{speaking && <span className="speaking-label">Говорит</span>}</div>;
+}
+function CallContent({ onLeave, notify, channelId, presence }: { onLeave: () => void; notify: (message: string) => void; channelId: string; presence: VoiceOccupant[] }) {
   const participants = useParticipants();
   const tracks = useTracks([Track.Source.ScreenShare, Track.Source.Camera], { onlySubscribed: true });
   const state = useConnectionState();
   const [deafened, setDeafened] = useState(false);
+  const stateRequests = useRef<Promise<void>>(Promise.resolve());
+  useEffect(() => {
+    if (state !== ConnectionState.Connected) return;
+    const report = () => { stateRequests.current = stateRequests.current.catch(() => {}).then(() => api('/voice-state', 'POST', { channelId, deafened })).then(() => {}).catch(() => {}); };
+    report(); const interval = setInterval(report, 12_000);
+    return () => clearInterval(interval);
+  }, [channelId, state, deafened]);
   const [devices, setDevices] = useState(false);
   const [levels, setLevels] = useState(loadAudioLevels);
   const [volumeTarget, setVolumeTarget] = useState<string | null>(null);
@@ -43,7 +62,8 @@ function CallContent({ onLeave, notify }: { onLeave: () => void; notify: (messag
       {screens.map(track => <div className="screen-tile" key={track.publication.trackSid}><VideoTrack trackRef={track} /><div className="screen-caption"><MonitorUp size={15} /><span>Экран · {track.participant.name}</span><button className="icon-button" aria-label="На весь экран" onClick={e => void e.currentTarget.closest('.screen-tile')?.requestFullscreen().catch(() => notify('Полноэкранный режим недоступен.'))}><Maximize2 size={16} /></button></div></div>)}
       <div className={`people-grid ${screens.length ? 'with-screen' : ''}`}>{participants.map(p => {
         const camera = cameras.find(t => t.participant.identity === p.identity);
-        return camera ? <div className="camera-tile" key={p.identity}><VideoTrack trackRef={camera} /><span>{p.name}{p.isLocal ? ' · вы' : ''}</span><button className="participant-volume icon-button" title={`Громкость: ${p.name || p.identity}`} aria-label={`Громкость: ${p.name || p.identity}`} onClick={() => openVolume(p)}><Volume2 size={16} /></button></div> : <Person participant={p} key={p.identity} onVolume={() => openVolume(p)} />;
+        const audioState = p.isLocal ? deafened : presence.find(person => person.id === p.identity)?.deafened ?? null;
+        return camera ? <div className="camera-tile" key={p.identity}><VideoTrack trackRef={camera} /><span>{p.name}{p.isLocal ? ' · вы' : ''}</span><VoiceStatus participant={p} deafened={audioState} /><button className="participant-volume icon-button" title={`Громкость: ${p.name || p.identity}`} aria-label={`Громкость: ${p.name || p.identity}`} onClick={() => openVolume(p)}><Volume2 size={16} /></button></div> : <Person participant={p} key={p.identity} onVolume={() => openVolume(p)} deafened={audioState} />;
       })}</div>
       {participants.length === 1 && !screens.length && <div className="waiting-note"><Radio size={18} /><span>В комнате пока только вы.</span></div>}
     </div>
@@ -59,7 +79,7 @@ function CallContent({ onLeave, notify }: { onLeave: () => void; notify: (messag
     {volumeTarget && <Modal title="Громкость участника" onClose={closeVolume}><div className="form-stack"><VolumeSlider label={target?.name || 'Участник'} value={levels.participants[volumeTarget] ?? 1} onChange={value => setLevels(old => ({ ...old, participants: { ...old.participants, [volumeTarget]: value } }))} /><p className="muted">Меняет только то, как вы слышите этого участника, включая звук его демонстрации экрана.</p>{!target && <p className="tiny">Участник вышел из комнаты. Настройка сохранена.</p>}<button className="secondary" onClick={() => setLevels(old => ({ ...old, participants: { ...old.participants, [volumeTarget]: 1 } }))}>Сбросить до 100%</button></div></Modal>}
   </div>;
 }
-export function Voice({ call, onLeave, notify }: { call: Call; onLeave: () => void; notify: (s: string) => void }) {
+export function Voice({ call, presence, onLeave, notify }: { call: Call; presence: VoiceOccupant[]; onLeave: () => void; notify: (s: string) => void }) {
   const [room, setRoom] = useState<Room>();
   const active = useRef(false);
   useEffect(() => {
@@ -77,5 +97,5 @@ export function Voice({ call, onLeave, notify }: { call: Call; onLeave: () => vo
   const onError = useCallback(() => notify('Не удалось подключиться к медиасерверу. Проверьте соединение и попробуйте снова.'), [notify]);
   const onMediaDeviceFailure = useCallback(() => notify('Браузер не дал доступ к устройству. Можно остаться слушателем и включить микрофон позже.'), [notify]);
   if (!room) return <div className="call-content">Подключаемся…</div>;
-  return <LiveKitRoom room={room} token={call.token} serverUrl={call.url} connect audio={false} video={false} onDisconnected={onDisconnected} onError={onError} onMediaDeviceFailure={onMediaDeviceFailure}><CallContent onLeave={onLeave} notify={notify} /></LiveKitRoom>;
+  return <LiveKitRoom room={room} token={call.token} serverUrl={call.url} connect audio={false} video={false} onDisconnected={onDisconnected} onError={onError} onMediaDeviceFailure={onMediaDeviceFailure}><CallContent onLeave={onLeave} notify={notify} channelId={call.channel.id} presence={presence} /></LiveKitRoom>;
 }

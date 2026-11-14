@@ -1,9 +1,16 @@
-import { RoomServiceClient, ServerError } from 'livekit-server-sdk';
+import { RoomServiceClient, ServerError, TrackSource, type ParticipantInfo } from 'livekit-server-sdk';
 import type { Config } from './config.ts';
 
+export type VoiceOccupant = { identity: string; microphoneEnabled: boolean };
+export function voiceOccupant(participant: Pick<ParticipantInfo, 'identity' | 'tracks'>): VoiceOccupant {
+  return {
+    identity: participant.identity,
+    microphoneEnabled: participant.tracks.some(track => track.source === TrackSource.MICROPHONE && !track.muted),
+  };
+}
 export interface MediaService {
   deleteRoom(id: string): Promise<void>;
-  participants(channelIds: string[]): Promise<Record<string, string[]>>;
+  participants(channelIds: string[]): Promise<Record<string, VoiceOccupant[]>>;
 }
 
 export function createMediaService(config: Config): MediaService {
@@ -18,7 +25,7 @@ export function createMediaService(config: Config): MediaService {
       if (!channelIds.length) return {};
       const rooms = await client.listRooms(channelIds);
       return Object.fromEntries(await Promise.all(rooms.filter(room => channelIds.includes(room.name) && room.numParticipants > 0).map(async room => {
-        try { return [room.name, (await client.listParticipants(room.name)).map(participant => participant.identity)]; }
+        try { return [room.name, (await client.listParticipants(room.name)).map(voiceOccupant)]; }
         catch (error) { if (missing(error)) return [room.name, []]; throw error; }
       })));
     },
