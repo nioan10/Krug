@@ -10,10 +10,10 @@ export function Avatar({ name, size = '', userId }: { name: string; size?: strin
   const avatar = useAvatars().avatars[userId || ''];
   return <span className={`avatar color-${color} ${size}`} aria-hidden="true">{avatar?.kind === 'image' ? <img className="avatar-image" src={`/api/avatars/${encodeURIComponent(userId!)}/image?v=${encodeURIComponent(avatar.version)}`} alt="" /> : avatar?.kind === 'text' ? <span className="avatar-face" style={{ transform: `rotate(${avatar.rotation}deg)`, fontSize: avatar.text.length > 3 ? `${Math.max(0.32, 3.2 / avatar.text.length)}em` : undefined }}>{avatar.text}</span> : name.trim().slice(0, 2).toUpperCase()}</span>;
 }
-export function Modal({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
+export function Modal({ title, children, onClose, closeOnBackdrop = true }: { title: string; children: ReactNode; onClose: () => void; closeOnBackdrop?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => { const dialog = ref.current!; dialog.showModal(); return () => dialog.close(); }, []);
-  return <dialog ref={ref} className="modal" aria-label={title} onCancel={onClose} onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+  return <dialog ref={ref} className="modal" aria-label={title} onCancel={onClose} onClick={e => { if (closeOnBackdrop && e.target === e.currentTarget) onClose(); }}>
     <div className="modal-head"><h2>{title}</h2><button className="icon-button" aria-label="Закрыть" onClick={onClose}><X size={20} /></button></div>{children}
   </dialog>;
 }

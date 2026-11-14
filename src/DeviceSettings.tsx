@@ -27,7 +27,7 @@ function DevicePicker({ kind, label, notify }: { kind: 'audioinput' | 'videoinpu
 }
 
 export const DeviceSettings = memo(function DeviceSettings({ onClose, notify, children }: { onClose: () => void; notify: Notify; children?: ReactNode }) {
-  return <Modal title="Звук и камера" onClose={onClose}><div className="form-stack">
+  return <Modal title="Звук и камера" onClose={onClose} closeOnBackdrop={false}><div className="form-stack">
     <DevicePicker kind="audioinput" label="Микрофон" notify={notify} />
     <AudioOutputPicker notify={notify} />
     <DevicePicker kind="videoinput" label="Камера" notify={notify} />
