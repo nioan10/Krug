@@ -46,6 +46,7 @@ internal sealed class DesktopWindow : Form
 #else
         Text = "Округ — экспериментальная версия";
 #endif
+        Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? Icon;
         Width = 1280; Height = 820; MinimumSize = new Size(600, 500);
 #if KRUG_TEST
         ShowInTaskbar = false; Opacity = 0;

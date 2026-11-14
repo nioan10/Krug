@@ -11,7 +11,8 @@
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <DefineConstants>$(DefineConstants);KRUG_PRODUCTION</DefineConstants>
     <DefineConstants Condition="'$(KrugRelease)' == 'true'">$(DefineConstants);KRUG_RELEASE</DefineConstants>
-    <Version>0.2.0</Version>
+    <Version>0.2.1</Version>
+    <ApplicationIcon>../../../public/icons/icon.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../*.cs" Exclude="../Program.cs;../MainWindow.cs" />
