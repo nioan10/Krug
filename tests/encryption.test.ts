@@ -37,6 +37,40 @@ const state = async (app: App, cookie: string) => (await app.inject({ url: '/api
 const payload = (d: EncryptionDevice, roster: string, body = 'private text'): SecretPayload => ({ v: 1, kind: 'message', origin, channelId: 'general', roster, deviceId: d.id, userId: d.userId, clientId: crypto.randomUUID(), body });
 const context = { origin, channelId: 'general', kind: 'message' as const };
 
+test('voice access checks authenticate the session and report current key membership without exposing keys', async t => {
+  const app = await appFor(t), owner = await register(app, 'owner');
+  const url = '/api/channels/lounge/voice-access';
+  assert.equal((await app.inject({ url })).statusCode, 401);
+  assert.equal((await app.inject({ url, headers: headers(owner.cookie) })).statusCode, 409);
+  await device(app, owner.cookie);
+  const access = await app.inject({ url, headers: headers(owner.cookie) });
+  assert.deepEqual(access.json(), { enabled: true, roster: (await state(app, owner.cookie)).roster });
+  assert.equal(access.headers['cache-control'], 'no-store');
+  assert.equal((await app.inject({ url: '/api/channels/general/voice-access', headers: headers(owner.cookie) })).statusCode, 400);
+  assert.equal((await app.inject({ url: '/api/channels/missing/voice-access', headers: headers(owner.cookie) })).statusCode, 404);
+  const second = await login(app, 'owner'); await device(app, second);
+  assert.notEqual((await app.inject({ url, headers: headers(owner.cookie) })).json().roster, access.json().roster);
+  await app.inject({ method: 'POST', url: '/api/auth/logout', headers: headers(second) });
+  assert.equal((await app.inject({ url, headers: headers(second) })).statusCode, 401);
+});
+
+test('ordinary API traffic and another device behind the same IP cannot consume the call heartbeat budget', async t => {
+  const app = await appFor(t), owner = await register(app, 'owner'); await device(app, owner.cookie);
+  const second = await login(app, 'owner'); await device(app, second);
+  let limited = false;
+  for (let i = 0; i < 185; i++) {
+    const response = await app.inject({ url: '/api/encryption', headers: headers(owner.cookie) });
+    if (response.statusCode === 429) { limited = true; break; }
+  }
+  assert(limited);
+  const url = '/api/channels/lounge/voice-access';
+  for (let i = 0; i < 30; i++) assert.equal((await app.inject({ url, headers: headers(owner.cookie) })).statusCode, 200);
+  assert.equal((await app.inject({ url, headers: headers(owner.cookie) })).statusCode, 429);
+  assert.equal((await app.inject({ url, headers: headers(second) })).statusCode, 200);
+  for (let i = 0; i < 30; i++) assert.equal((await app.inject({ url, headers: { cookie: `krug_session=fake-${i}`, 'x-forwarded-for': `198.51.100.${i}` } })).statusCode, 401);
+  assert.equal((await app.inject({ url, headers: { cookie: 'krug_session=another-fake', 'x-forwarded-for': '198.51.100.250' } })).statusCode, 429);
+});
+
 test('server stores ciphertext only, rejects downgrade/replay/stale rosters and grants encrypted calls to the current session', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'krug-e2ee-')); const path = join(directory, 'test.db');
   const app = await appFor(t, {}, path), owner = await register(app, 'owner'), friend = await register(app, 'friend', owner.cookie);

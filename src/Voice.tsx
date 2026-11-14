@@ -1,6 +1,5 @@
 import { participantUserId } from './participant-user';
 import E2EEWorker from 'livekit-client/e2ee-worker?worker';
-import { useEncryption } from './EncryptionSettings';
 import { subscribe } from './events';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { LiveKitRoom, TrackToggle, useParticipants, useTracks, VideoTrack, useIsSpeaking, useIsMuted, useConnectionState, StartAudio, type TrackReference } from '@livekit/components-react';
@@ -15,6 +14,7 @@ import { api, type Channel, type VoiceOccupant } from './api';
 import { DesktopShare } from './DesktopShare';
 import { hasVisibleCamera } from './camera-state';
 import { ScreenShares } from './ScreenShares';
+import { VoiceAccessMonitor, type VoiceAccess } from './voice-access';
 
 export type Call = { channel: Channel; token: string; url: string; e2ee?: { key: ArrayBuffer; roster: string } };
 const options: RoomOptions = {
@@ -55,7 +55,7 @@ function ParticipantTile({ participant, camera, onVolume, deafened, afk }: { par
   if (!camera || !hasVisibleCamera(camera.publication, muted)) return <Person participant={participant} onVolume={onVolume} deafened={deafened} afk={afk} />;
   return <div className={`camera-tile ${speaking ? 'speaking' : ''}`}><VideoTrack trackRef={camera} /><AfkBadge active={afk} /><span>{participant.name}{participant.isLocal ? ' · вы' : ''}</span><VoiceStatus participant={participant} deafened={deafened} /><button className="participant-volume icon-button" title={`Громкость: ${participant.name || participant.identity}`} aria-label={`Громкость: ${participant.name || participant.identity}`} onClick={onVolume}><Volume2 size={16} /></button>{speaking && !afk && <div className="speaking-label">Говорит</div>}</div>;
 }
-function CallContent({ room, onLeave, notify, channelId, presence }: { room: Room; onLeave: () => void; notify: (message: string) => void; channelId: string; presence: VoiceOccupant[] }) {
+function CallContent({ room, onLeave, notify, channelId, presence, checkingAccess }: { room: Room; onLeave: () => void; notify: (message: string) => void; channelId: string; presence: VoiceOccupant[]; checkingAccess: boolean }) {
   const participants = useParticipants();
   const tracks = useTracks([Track.Source.ScreenShare, Track.Source.ScreenShareAudio, Track.Source.Camera], { onlySubscribed: true });
   const state = useConnectionState();
@@ -118,6 +118,7 @@ function CallContent({ room, onLeave, notify, channelId, presence }: { room: Roo
     <RestoreAudioOutput notify={notify} />
     <IncomingAudio levels={levels} muted={deafened} />
     <div className="call-overline"><span className={`connection-label ${state === ConnectionState.Connected ? 'good' : ''}`}><span className="live-dot" />{state === ConnectionState.Connected ? 'Подключено' : state === ConnectionState.Reconnecting || state === ConnectionState.SignalReconnecting ? 'Восстанавливаем связь…' : 'Подключаемся…'}{state === ConnectionState.Connected && <span className="call-ping" title="Задержка до голосового сервера">{ping === null ? 'Пинг —' : `${ping} мс`}</span>}</span><span>{room.options.encryption ? '🔒 Сквозное шифрование · ' : ''}{participants.length} в комнате</span></div>
+    {checkingAccess && <div className="call-access-pending" role="status">Проверяем доступ… Связь с сервером временно недоступна.{room.options.encryption ? ' Звонок остаётся зашифрованным.' : ''}</div>}
     <div className="call-stage">
       <ScreenShares screens={screens} notify={notify} audioFor={track => ({
         available: tracks.some(t => t.source === Track.Source.ScreenShareAudio && t.participant.identity === track.participant.identity),
@@ -146,8 +147,8 @@ function CallContent({ room, onLeave, notify, channelId, presence }: { room: Roo
   </div>;
 }
 export function Voice({ call, presence, onLeave, notify }: { call: Call; presence: VoiceOccupant[]; onLeave: () => void; notify: (s: string) => void }) {
-  const { manager } = useEncryption();
   const [room, setRoom] = useState<Room>();
+  const [checkingAccess, setCheckingAccess] = useState(false);
   const active = useRef(false);
   useEffect(() => {
     let disposed = false;
@@ -175,23 +176,17 @@ export function Voice({ call, presence, onLeave, notify }: { call: Call; presenc
       if (!disposed) setRoom(nextRoom);
     }
     void prepare().catch(error => { if (!disposed) { notify(error instanceof Error ? error.message : 'Не удалось включить шифрование звонка.'); onLeave(); } });
-    let checking = false;
-    async function checkAccess() {
-      if (checking || disposed || !manager) return;
-      checking = true;
-      const deadline = setTimeout(() => { if (!disposed) { notify('Не удалось проверить доступ к звонку. Подключитесь снова.'); onLeave(); } }, 5000);
-      try {
-        const state = await manager.refresh();
-        if (state.enabled !== Boolean(call.e2ee) || (call.e2ee && state.roster !== call.e2ee.roster)) {
-          if (!disposed) { notify('Состав устройств изменился. Подключитесь к звонку с новым ключом.'); onLeave(); }
-        }
-      } catch { if (!disposed) { notify('Не удалось подтвердить доступ. Звонок остановлен.'); onLeave(); } }
-      finally { clearTimeout(deadline); checking = false; }
-    }
-    const off = subscribe(event => { if (event.type === 'encryption-changed' || event.type === 'ready') void checkAccess(); });
-    const timer = setInterval(() => void checkAccess(), 3000);
+    const monitor = new VoiceAccessMonitor({
+      expected: { enabled: Boolean(call.e2ee), roster: call.e2ee?.roster },
+      request: signal => api<VoiceAccess>(`/channels/${encodeURIComponent(call.channel.id)}/voice-access`, 'GET', undefined, signal),
+      waiting: setCheckingAccess,
+      denied: message => { if (!disposed) { active.current = false; notify(message); onLeave(); } },
+    });
+    monitor.check();
+    const off = subscribe(event => { if (event.type === 'encryption-changed' || event.type === 'ready') monitor.check(); });
+    window.addEventListener('online', monitor.check);
     return () => {
-      disposed = true; active.current = false; clearInterval(timer); off();
+      disposed = true; active.current = false; monitor.stop(); off(); window.removeEventListener('online', monitor.check);
       void (nextRoom?.disconnect() ?? Promise.resolve()).finally(() => { worker?.terminate(); return audioContext.close(); }).catch(() => {});
     };
   }, []);
@@ -199,5 +194,5 @@ export function Voice({ call, presence, onLeave, notify }: { call: Call; presenc
   const onError = useCallback(() => notify('Не удалось подключиться к медиасерверу. Проверьте соединение и попробуйте снова.'), [notify]);
   const onMediaDeviceFailure = useCallback(() => notify('Браузер не дал доступ к устройству. Можно остаться слушателем и включить микрофон позже.'), [notify]);
   if (!room) return <div className="call-content">Подключаемся…</div>;
-  return <LiveKitRoom room={room} token={call.token} serverUrl={call.url} connect audio={false} video={false} onDisconnected={onDisconnected} onError={onError} onMediaDeviceFailure={onMediaDeviceFailure}><CallContent room={room} onLeave={onLeave} notify={notify} channelId={call.channel.id} presence={presence} /></LiveKitRoom>;
+  return <LiveKitRoom room={room} token={call.token} serverUrl={call.url} connect audio={false} video={false} onDisconnected={onDisconnected} onError={onError} onMediaDeviceFailure={onMediaDeviceFailure}><CallContent room={room} onLeave={onLeave} notify={notify} channelId={call.channel.id} presence={presence} checkingAccess={checkingAccess} /></LiveKitRoom>;
 }

@@ -525,6 +525,19 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     sendUnread();
     return { ok: true };
   });
+  // The call heartbeat must not compete with history sync or other clients behind one NAT.
+  // Unauthenticated requests remain limited by IP; only a live session gets its own budget.
+  app.get('/api/channels/:id/voice-access', { preHandler: auth, config: { rateLimit: {
+    max: 30, timeWindow: '1 minute', keyGenerator: (req: FastifyRequest) => {
+      const token = req.cookies[sessionCookie]; const hash = token ? digest(token) : '';
+      return hash && sessions.active(hash) ? `voice-access:${hash}` : `voice-access-ip:${req.ip}`;
+    },
+  } } }, async req => {
+    const channel = requireChannel(channelId(req));
+    if (channel.kind !== 'voice') throw new ApiError(400, 'Это не голосовая комната.');
+    if (encryption.enabled()) encryption.own(req);
+    return { enabled: encryption.enabled(), roster: encryption.roster() };
+  });
   app.post('/api/channels/:id/voice-token', { preHandler: auth, config: { rateLimit: { max: 15, timeWindow: '1 minute' } } }, async req => {
     const channel = requireChannel(channelId(req));
     if (channel.kind !== 'voice') throw new ApiError(400, 'Это текстовый канал.');

@@ -57,6 +57,7 @@
 
 .avatar-save-status{font-size:11px;color:#c5edab;margin:12px 0 0}
 .session-row { display:flex; gap:16px; align-items:center; padding:12px 0; border-bottom:1px solid var(--border, #333d2c); }
+.call-access-pending{padding:10px 12px;margin-bottom:12px;border:1px solid #665b35;border-radius:8px;background:#292618;color:#dacb9a;font-size:11px;line-height:1.5}
 .session-row > div { flex:1; min-width:0; }
 .session-row small { display:block; overflow-wrap:anywhere; color:var(--muted, #939c90); margin-top:4px; }
 .encryption-settings { padding-top:20px; border-top:1px solid var(--border, #333d2c); }

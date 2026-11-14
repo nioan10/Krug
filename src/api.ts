@@ -8,9 +8,13 @@ export type Member = User & { createdAt: number; disabledAt: number | null };
 export type VoiceOccupant = User & { identity?: string; microphoneEnabled: boolean; deafened: boolean | null; afk?: boolean };
 export type VoicePresence = { rooms: Record<string, VoiceOccupant[]>; available: boolean };
 export class HttpError extends Error { constructor(public status: number, message: string) { super(message); } }
-export async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
+export function isTransientRequestError(error: unknown) {
+  return error instanceof TypeError || (error instanceof DOMException && ['AbortError', 'TimeoutError'].includes(error.name)) ||
+    (error instanceof HttpError && (error.status === 408 || error.status === 429 || (error.status >= 500 && error.status < 600)));
+}
+export async function api<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(`/api${path}`, {
-    method, credentials: 'same-origin',
+    method, credentials: 'same-origin', signal,
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
