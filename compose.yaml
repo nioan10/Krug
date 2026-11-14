@@ -2,6 +2,7 @@
 services:
   app:
     build: .
+    image: krug-app
     restart: unless-stopped
     network_mode: host
     env_file: .env
@@ -12,6 +13,7 @@ services:
       DESKTOP_UPDATE_DIR: /app/desktop-updates
     volumes:
       - krug_data:/app/data
+      - stream_data:/app/streams
       - ./desktop-updates:/app/desktop-updates:ro
     read_only: true
     tmpfs: ["/tmp:size=32m"]
@@ -21,6 +23,46 @@ services:
     logging: &logs
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
+  streams:
+    profiles: [streams]
+    image: krug-app
+    command: ["node", "--import", "tsx", "server/stream-index.ts"]
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      NODE_ENV: production
+      APP_ORIGIN: ${APP_ORIGIN}
+      STREAM_ORIGIN: ${STREAM_ORIGIN:-}
+      STREAM_DATABASE_PATH: /app/streams/streams.sqlite
+      STREAM_LIVEKIT_URL: ${STREAM_LIVEKIT_URL:-}
+      STREAM_LIVEKIT_API_KEY: ${STREAM_LIVEKIT_API_KEY:-}
+      STREAM_LIVEKIT_API_SECRET: ${STREAM_LIVEKIT_API_SECRET:-}
+    volumes:
+      - stream_data:/app/streams
+    read_only: true
+    tmpfs: ["/tmp:size=32m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      start_period: 15s
+    logging: *logs
+  stream-livekit:
+    profiles: [streams]
+    image: livekit/livekit-server:v1.13.11
+    command: ["--config", "/etc/livekit.yaml"]
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./deploy/stream-livekit.yaml:/etc/livekit.yaml:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1g
+    logging: *logs
   livekit:
     image: livekit/livekit-server:v1.13.11
     command: ["--config", "/etc/livekit.yaml"]
@@ -51,4 +93,5 @@ services:
     logging: *logs
 volumes:
   krug_data:
+  stream_data:
   caddy_data:

@@ -8,6 +8,7 @@ backups/
 .setup/
 .local/
 deploy/livekit.yaml
+deploy/stream-livekit.yaml
 deploy/Caddyfile
 deploy/caddy.json
 *.log
