@@ -5,6 +5,7 @@ import { createUpdateManager, type UpdateState } from './pwa-updates';
 import type { DesktopUpdateStatus } from './DesktopShare';
 
 interface InstallPrompt extends Event { prompt(): Promise<{ outcome: 'accepted' | 'dismissed' }> }
+const androidApp = /\bKrugAndroid\/1\b/.test(navigator.userAgent);
 let prompt: InstallPrompt | null = null;
 let snapshot = { installed: Boolean(window.krugDesktop) || window.matchMedia('(display-mode: standalone)').matches || Boolean((navigator as Navigator & { standalone?: boolean }).standalone), ready: false };
 const listeners = new Set<() => void>();
@@ -29,7 +30,7 @@ export function InstallApp({ compact = false, authenticated = false }: { compact
     finally { update({ ready: false }); }
   }
   return <>
-    {!window.krugDesktop && <button className={compact ? 'install-sidebar' : 'install-auth'} onClick={() => setHelp(true)}><Download size={16} />Установить приложение</button>}
+    {!window.krugDesktop && !androidApp && <button className={compact ? 'install-sidebar' : 'install-auth'} onClick={() => setHelp(true)}><Download size={16} />Установить приложение</button>}
     {help && <Modal title="Установить Округ" onClose={() => setHelp(false)}><div className="install-help"><p>Приложение открывается в отдельном окне. Для звонков и переписки нужен интернет.</p>
       <h3>Windows</h3><p>Установите приложение для компьютера: в нём можно передавать звук выбранной программы вместе с демонстрацией.</p>
       {authenticated ? <a className="primary install-download" href="/api/desktop-installer" download><Download size={16} />Скачать Округ для Windows</a> : <p className="tiny">Войдите в аккаунт, чтобы скачать приложение для Windows.</p>}
