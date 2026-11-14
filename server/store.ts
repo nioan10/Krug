@@ -40,6 +40,10 @@ export function openStore(config: Config) {
       messageId INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
       mime TEXT NOT NULL, data BLOB NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS user_avatars (
+      userId TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL, text TEXT, rotation INTEGER, version TEXT NOT NULL, mime TEXT, data BLOB
+    );
     CREATE TABLE IF NOT EXISTS channel_reads (
       userId TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       channelId TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,

@@ -32,6 +32,32 @@ async function member(app: App, admin: string, username = 'member') {
   assert.equal(response.statusCode, 201, response.body); return cookieOf(response);
 }
 
+test('avatars are private, synced, replaceable and removed with the account', async t => {
+  const app = await buildApp(config()); t.after(() => app.close());
+  const admin = await owner(app); const friend = await member(app, admin);
+  const id = (await app.inject({ url: '/api/me', headers: headers(friend) })).json().user.id;
+  assert.equal((await app.inject({ url: '/api/avatars' })).statusCode, 401);
+  const socket = await app.injectWS('/api/events', { socket: testSocket, headers: headers(admin) }); t.after(() => socket.terminate());
+  const event = new Promise<any>(resolve => socket.on('message', data => { const value = JSON.parse(data.toString()); if (value.type === 'avatar-updated') resolve(value); }));
+  const put = (payload: object) => app.inject({ method: 'PUT', url: '/api/me/avatar', headers: headers(friend), payload });
+  assert.equal((await put({ kind: 'text', text: ':)', rotation: 90 })).statusCode, 200);
+  assert.deepEqual(await event, { type: 'avatar-updated', userId: id, avatar: { kind: 'text', text: ':)', rotation: 90 } });
+  assert.equal((await app.inject({ url: '/api/avatars', headers: headers(admin) })).json().avatars[id].text, ':)');
+  assert.equal((await put({ kind: 'text', text: 'x', rotation: 181 })).statusCode, 400);
+  const image = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
+  assert.equal((await put({ kind: 'image', image })).statusCode, 200);
+  assert.equal((await app.inject({ url: `/api/avatars/${id}/image` })).statusCode, 401);
+  const picture = await app.inject({ url: `/api/avatars/${id}/image`, headers: headers(admin) });
+  assert.equal(picture.statusCode, 200); assert.equal(picture.headers['content-type'], 'image/png');
+  assert.deepEqual(picture.rawPayload, Buffer.from(image, 'base64'));
+  assert.equal((await put({ kind: 'default' })).statusCode, 200);
+  assert.equal((await app.inject({ url: `/api/avatars/${id}/image`, headers: headers(admin) })).statusCode, 404);
+  assert.equal((await app.inject({ url: '/api/avatars', headers: headers(admin) })).json().avatars[id], undefined);
+  await put({ kind: 'image', image });
+  assert.equal((await app.inject({ method: 'DELETE', url: `/api/members/${id}`, headers: headers(admin), payload: { confirmation: 'member' } })).statusCode, 200);
+  assert.equal((await app.inject({ url: `/api/avatars/${id}/image`, headers: headers(admin) })).statusCode, 404);
+});
+
 test('revoking a used invitation disables its member, sessions and voice, and access can be restored', async t => {
   let joinedId = ''; const removed: string[] = [];
   const app = await buildApp(config(), { async participants() { return { lounge: joinedId ? [{ identity: joinedId, microphoneEnabled: true }] : [] }; }, async removeParticipant(room, id) { removed.push(`${room}:${id}`); } });

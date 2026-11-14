@@ -1,3 +1,4 @@
+export type AvatarStyle = { kind: 'image'; version: string } | { kind: 'text'; text: string; rotation: number };
 export type User = { id: string; username: string; displayName: string; role: 'admin' | 'member' };
 export type Channel = { id: string; name: string; kind: 'text' | 'voice'; description: string };
 export type Message = { id: number; channelId: string; body: string; createdAt: number; user: User; image?: boolean };

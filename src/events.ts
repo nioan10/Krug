@@ -1,9 +1,10 @@
-import type { Channel, Message, User, VoicePresence } from './api';
+import type { AvatarStyle, Channel, Message, User, VoicePresence } from './api';
 export type ServerEvent =
   | { type: 'ready' }
   | { type: 'unread'; channels: Record<string, boolean> }
   | { type: 'presence'; users: User[] }
   | { type: 'members-updated' }
+  | { type: 'avatar-updated'; userId: string; avatar: AvatarStyle | null }
   | { type: 'channels'; channels: Channel[] }
   | { type: 'channel-deleted'; channelId: string }
   | ({ type: 'voice-presence' } & VoicePresence)

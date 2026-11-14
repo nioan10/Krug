@@ -251,6 +251,40 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     return { ok: true };
   });
   app.get('/api/me', { preHandler: auth }, async req => ({ user: req.user }));
+  const avatarRow = (id: string) => {
+    const row = db.prepare('SELECT kind, text, rotation, version FROM user_avatars WHERE userId = ?').get(id) as { kind: string; text: string | null; rotation: number | null; version: string } | undefined;
+    if (!row) return null;
+    return row.kind === 'image' ? { kind: 'image', version: row.version } : { kind: 'text', text: row.text, rotation: row.rotation };
+  };
+  app.get('/api/avatars', { preHandler: auth }, async () => {
+    const rows = db.prepare('SELECT userId FROM user_avatars').all() as { userId: string }[];
+    return { avatars: Object.fromEntries(rows.map(row => [row.userId, avatarRow(row.userId)])) };
+  });
+  app.get('/api/avatars/:id/image', { preHandler: auth }, async (req, reply) => {
+    const id = channelId(req);
+    const row = db.prepare("SELECT mime, data FROM user_avatars WHERE userId = ? AND kind = 'image'").get(id) as { mime: string; data: Uint8Array } | undefined;
+    if (!row) throw new ApiError(404, 'Аватар не найден.');
+    return reply.header('X-Content-Type-Options', 'nosniff').type(row.mime).send(Buffer.from(row.data));
+  });
+  app.put('/api/me/avatar', { preHandler: auth, bodyLimit: 512 * 1024, config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async req => {
+    const input = z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('default') }),
+      z.object({ kind: z.literal('text'), text: z.string().trim().min(1).max(12).regex(/^[^\p{C}]+$/u), rotation: z.number().int().min(-180).max(180) }),
+      z.object({ kind: z.literal('image'), image: z.string().max(500000) }),
+    ]).parse(req.body);
+    const id = req.user!.id;
+    if (input.kind === 'default') db.prepare('DELETE FROM user_avatars WHERE userId = ?').run(id);
+    else {
+      const image = input.kind === 'image' ? decodeImage(input.image) : null;
+      if (image && (image.mime !== 'image/png' || image.data.length > 350000)) throw new ApiError(400, 'Не удалось сохранить изображение аватара.');
+      db.prepare(`INSERT INTO user_avatars (userId,kind,text,rotation,version,mime,data) VALUES (?,?,?,?,?,?,?)
+        ON CONFLICT(userId) DO UPDATE SET kind=excluded.kind,text=excluded.text,rotation=excluded.rotation,version=excluded.version,mime=excluded.mime,data=excluded.data`).run(id, input.kind, input.kind === 'text' ? input.text : null, input.kind === 'text' ? input.rotation : null, randomUUID(), image?.mime ?? null, image?.data ?? null);
+    }
+    const avatar = avatarRow(id);
+    broadcast({ type: 'avatar-updated', userId: id, avatar });
+    return { avatar };
+  });
+
   const androidFile = (name: string) => {
     if (!/^Okrug-\d+\.\d+\.\d+\.apk$/.test(name)) throw new ApiError(404, 'Обновление не найдено.');
     return resolve(config.DESKTOP_UPDATE_DIR, 'android', name);
