@@ -20,6 +20,7 @@ export class EncryptionManager extends EventTarget {
   private maintaining = false;
   private stopped = false;
   private opening = new Map<string, Promise<SecretPayload>>();
+  private refreshing?: Promise<EncryptionState>;
   constructor(readonly user: User, readonly sessionId: string) { super(); }
   private notify() { this.dispatchEvent(new Event('change')); }
   private async mutate(work: (vault: Vault) => void) {
@@ -39,7 +40,7 @@ export class EncryptionManager extends EventTarget {
   async initialize() {
     await locks(this.user.id, async () => {
       this.vault = await loadVault(this.user.id);
-      const state = await api<EncryptionState>('/encryption');
+      const state = await api<EncryptionState>('/encryption', 'GET', undefined, AbortSignal.timeout(12_000));
       const remote = state.devices.find(d => d.current);
       let record = this.vault.records.find(r => r.sessionId === this.sessionId);
       if (remote && (!record || remote.fingerprint !== record.device.fingerprint)) throw Error('На этом устройстве потерян ключ текущей сессии. Выйдите и войдите заново, затем импортируйте резервную копию истории.');
@@ -51,7 +52,7 @@ export class EncryptionManager extends EventTarget {
         // Persist before registering: a failed response must not strand a key on the server.
         await saveVault(this.vault);
       }
-      const { device } = await api<{ device: EncryptionDevice }>('/encryption/devices', 'POST', { publicKey: record.device.publicKey, label: record.device.label });
+      const { device } = await api<{ device: EncryptionDevice }>('/encryption/devices', 'POST', { publicKey: record.device.publicKey, label: record.device.label }, AbortSignal.timeout(12_000));
       if (device.fingerprint !== record.device.fingerprint || device.userId !== this.user.id) throw Error('Ключ устройства подменён сервером.');
       record.device = device; mergePins(this.vault, { [device.id]: device.fingerprint });
       (this.vault.verified ??= {})[device.id] = device.fingerprint;
@@ -69,8 +70,12 @@ export class EncryptionManager extends EventTarget {
     await this.mutate(vault => { mergePins(vault, { [id]: device.fingerprint }); (vault.verified ??= {})[id] = device.fingerprint; });
     void this.maintainHistory();
   }
-  async refresh() {
-    const state = await api<EncryptionState>('/encryption');
+  refresh() {
+    this.refreshing ??= this.refreshState().finally(() => { this.refreshing = undefined; });
+    return this.refreshing;
+  }
+  private async refreshState() {
+    const state = await api<EncryptionState>('/encryption', 'GET', undefined, AbortSignal.timeout(12_000));
     const vault = await loadVault(this.user.id); const trustChanged = JSON.stringify(vault.trusted) !== JSON.stringify(this.vault.trusted); this.vault = vault;
     if (vault.enabled && !state.enabled) throw Error('Сервер пытается отключить ранее включённое шифрование. Отправка остановлена.');
     if (!state.devices.some(d => d.id === this.current.device.id && d.fingerprint === this.current.device.fingerprint && d.current)) throw Error('Ключ этой сессии больше не активен.');
@@ -271,7 +276,7 @@ export class EncryptionManager extends EventTarget {
 }
 const managers = new Map<string, Promise<EncryptionManager>>();
 export async function initializeEncryption(user: User) {
-  const { sessions } = await api<{ sessions: { id: string; current: number }[] }>('/sessions');
+  const { sessions } = await api<{ sessions: { id: string; current: number }[] }>('/sessions', 'GET', undefined, AbortSignal.timeout(12_000));
   const current = sessions.find(s => s.current); if (!current) throw Error('Сессия завершилась. Войдите снова.');
   const key = `${user.id}:${current.id}`;
   if (!managers.has(key)) { const pending = new EncryptionManager(user, current.id).initialize(); managers.set(key, pending); pending.catch(() => managers.delete(key)); }

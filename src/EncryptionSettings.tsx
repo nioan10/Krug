@@ -1,9 +1,9 @@
 import { createContext, useContext, useEffect, useState } from 'react';
-import { api, errorText, type Channel, type User } from './api';
+import { api, errorText, isTransientRequestError, type Channel, type User } from './api';
 import { EncryptionManager, initializeEncryption } from './encryption';
 import { subscribe } from './events';
 
-type EncryptionView = { manager?: EncryptionManager; error: string; revision: number };
+type EncryptionView = { manager?: EncryptionManager; error: string; revision: number; retrying?: boolean };
 export const EncryptionContext = createContext<EncryptionView>({ error: '', revision: 0 });
 export const useEncryption = () => useContext(EncryptionContext);
 export function useEncryptionController(user: User | null): EncryptionView {
@@ -11,17 +11,33 @@ export function useEncryptionController(user: User | null): EncryptionView {
   useEffect(() => {
     setView({ error: '', revision: 0 });
     if (!user) return;
-    let cancelled = false; let manager: EncryptionManager | undefined;
+    let cancelled = false, initializing = false, canInitialize = true; let manager: EncryptionManager | undefined;
     const changed = () => { if (!cancelled) setView(old => ({ ...old, manager, revision: old.revision + 1 })); };
-    const refresh = async () => {
-      if (!manager || cancelled) return;
-      try { await manager.refresh(); if (!cancelled) setView(old => old.error ? { ...old, error: '' } : old); void manager.maintainHistory(); }
-      catch (e) { if (!cancelled) setView(old => ({ ...old, error: errorText(e) })); }
+    const failed = (error: unknown) => {
+      if (!cancelled) setView(old => ({ ...old, error: isTransientRequestError(error) ? 'Не удалось обновить состояние ключей. Повторим проверку, когда восстановится связь.' : errorText(error), retrying: isTransientRequestError(error) }));
     };
-    void initializeEncryption(user).then(value => { if (cancelled) return; manager = value; manager.addEventListener('change', changed); changed(); }).catch(e => { if (!cancelled) setView({ error: errorText(e), revision: 0 }); });
+    const initialize = async () => {
+      if (cancelled || initializing || !canInitialize) return;
+      initializing = true;
+      try {
+        const value = await initializeEncryption(user);
+        if (cancelled) return;
+        manager = value; manager.addEventListener('change', changed);
+        setView(old => ({ manager, error: '', retrying: false, revision: old.revision + 1 }));
+      } catch (error) { canInitialize = isTransientRequestError(error); failed(error); }
+      finally { initializing = false; }
+    };
+    const refresh = async () => {
+      if (cancelled) return;
+      if (!manager) { await initialize(); return; }
+      try { await manager.refresh(); if (!cancelled) setView(old => old.error ? { ...old, error: '', retrying: false } : old); void manager.maintainHistory(); }
+      catch (e) { failed(e); }
+    };
+    void initialize();
     const off = subscribe(event => { if (event.type === 'history-keys') manager?.historyChanged(); if (event.type === 'encryption-changed' || event.type === 'ready') void refresh(); });
     const timer = setInterval(() => { void refresh(); }, 10_000);
-    return () => { cancelled = true; clearInterval(timer); off(); manager?.removeEventListener('change', changed); };
+    window.addEventListener('online', refresh);
+    return () => { cancelled = true; clearInterval(timer); off(); window.removeEventListener('online', refresh); manager?.removeEventListener('change', changed); };
   }, [user?.id]);
   return view;
 }

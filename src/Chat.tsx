@@ -167,7 +167,7 @@ export function Chat({ channel, user, compact = false, notify }: { channel: Chan
     setBusy(true);
     try {
       const image = imageFile ? await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onerror = () => reject(new Error('Не удалось прочитать изображение.')); reader.onload = () => resolve(String(reader.result).split(',')[1]); reader.readAsDataURL(imageFile); }) : undefined;
-      if (!manager || encryptionError) throw Error(encryptionError || 'Подготавливаем ключи. Повторите отправку через несколько секунд.');
+      if (!manager) throw Error(encryptionError || 'Подготавливаем ключи. Повторите отправку через несколько секунд.');
       await manager.refresh();
       const data = manager.state.enabled ? await manager.encryptMessage(channel.id, body, image && imageFile ? { bytes: base64ToBytes(image), mime: imageFile.type } : undefined) : { body, image };
       const result = await api<{ message: Message }>(`/channels/${channel.id}/messages`, 'POST', data);
