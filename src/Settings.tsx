@@ -1,10 +1,11 @@
 import { EncryptionSettings } from './EncryptionSettings';
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { Check, Copy, Link, Plus, RotateCcw, ShieldCheck, Trash2, UserX, Users } from 'lucide-react';
 import { api, errorText, type Channel, type Invite, type Member, type User } from './api';
 import { Avatar, Modal } from './ui';
 import { AvatarSettings } from './AvatarSettings';
 import { SessionSettings } from './SessionSettings';
+import { SecurityInfo } from './SecurityInfo';
 
 type AccessAction = { kind: 'revoke'; invite: Invite } | { kind: 'disable' | 'delete'; member: Member };
 export function InviteModal({ onClose, notify }: { onClose: () => void; notify: (s: string) => void }) {
@@ -58,9 +59,21 @@ export function CreateChannel({ onClose, notify, onCreated }: { onClose: () => v
   return <Modal title="Создать канал" onClose={onClose}><form className="form-stack" onSubmit={submit}><label>Название<input name="name" required maxLength={32} autoFocus placeholder="Например, Кино по пятницам" /></label><label>Тип<select name="kind"><option value="voice">Голосовая комната</option><option value="text">Текстовый канал</option></select></label><label>Описание<input name="description" maxLength={120} placeholder="Описание канала" /></label><button className="primary" disabled={busy}>{busy ? 'Создаём…' : 'Создать канал'}</button></form></Modal>;
 }
 export function Settings({ user, channel, onClose, notify, onLogout, onDeleted }: { user: User; channel?: Channel; onClose: () => void; notify: (s: string) => void; onLogout: () => void; onDeleted: (channels: Channel[]) => void }) {
+  const [tab, setTab] = useState<'main' | 'security'>('main');
+  const tabId = useId();
+  const tabList = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  function selectTab(next: typeof tab) {
+    setTab(next);
+    tabList.current?.querySelector<HTMLButtonElement>(`[data-settings-tab="${next}"]`)?.focus();
+  }
+  function navigateTabs(event: KeyboardEvent<HTMLDivElement>) {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    selectTab(event.key === 'Home' ? 'main' : event.key === 'End' ? 'security' : tab === 'main' ? 'security' : 'main');
+  }
   async function password(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true);
     try { await api('/auth/password', 'POST', Object.fromEntries(new FormData(event.currentTarget))); onLogout(); notify('Пароль обновлён. Войдите заново.'); }
@@ -76,11 +89,19 @@ export function Settings({ user, channel, onClose, notify, onLogout, onDeleted }
     try { const result = await api<{ channels: Channel[] }>(`/channels/${channel.id}`, 'DELETE', Object.fromEntries(new FormData(event.currentTarget))); onDeleted(result.channels); notify(`Канал «${channel.name}» удалён.`); }
     catch (e) { notify(errorText(e)); } finally { setBusy(false); }
   }
-  return <Modal title="Настройки" onClose={onClose} closeOnBackdrop={false}><div className="settings-identity"><ShieldCheck size={21} /><div><strong>{user.displayName}</strong><span>@{user.username} · {user.role === 'admin' ? 'Владелец' : 'Участник'}</span></div></div>
+  return <Modal title="Настройки" onClose={onClose} closeOnBackdrop={false}>
+    <div className="settings-tabs" ref={tabList} role="tablist" aria-label="Разделы настроек" onKeyDown={navigateTabs}>
+      <button type="button" role="tab" id={`${tabId}-main-tab`} aria-controls={`${tabId}-main-panel`} aria-selected={tab === 'main'} tabIndex={tab === 'main' ? 0 : -1} data-settings-tab="main" onClick={() => setTab('main')}>Основное</button>
+      <button type="button" role="tab" id={`${tabId}-security-tab`} aria-controls={`${tabId}-security-panel`} aria-selected={tab === 'security'} tabIndex={tab === 'security' ? 0 : -1} data-settings-tab="security" onClick={() => setTab('security')}><ShieldCheck size={16} aria-hidden="true" />Безопасность</button>
+    </div>
+    <div className="settings-panel" role="tabpanel" id={`${tabId}-security-panel`} aria-labelledby={`${tabId}-security-tab`} hidden={tab !== 'security'} tabIndex={0}><SecurityInfo onSettings={() => selectTab('main')} /></div>
+    <div className="settings-panel" role="tabpanel" id={`${tabId}-main-panel`} aria-labelledby={`${tabId}-main-tab`} hidden={tab !== 'main'} tabIndex={0}>
+    <div className="settings-identity"><ShieldCheck size={21} /><div><strong>{user.displayName}</strong><span>@{user.username} · {user.role === 'admin' ? 'Владелец' : 'Участник'}</span></div></div>
     <AvatarSettings user={user} notify={notify} />
     <SessionSettings notify={notify} onLogout={onLogout} />
     <form className="form-stack" onSubmit={password}><h3>Сменить пароль</h3><label>Текущий пароль<input name="currentPassword" type="password" autoComplete="current-password" required maxLength={128} /></label><label>Новый пароль<input name="password" type="password" autoComplete="new-password" required minLength={12} maxLength={128} placeholder="Не менее 12 символов" /></label><p className="tiny">После смены пароля потребуется заново войти на всех устройствах.</p><button className="secondary" disabled={busy}>Обновить пароль</button></form>
     <EncryptionSettings user={user} channel={channel} notify={notify} />
     {user.role === 'admin' && channel && <div className="danger-zone"><h3>Канал «{channel.name}»</h3>{deleting ? <form className="form-stack" onSubmit={removeChannel}><p>Канал и все его сообщения будут удалены. {channel.kind === 'voice' && 'Участники будут отключены от звонка. '}Резервные копии сохранятся.</p><label>Для подтверждения введите: {channel.name}<input name="confirmation" required autoComplete="off" /></label><button className="danger" disabled={busy}>{busy ? 'Удаляем…' : 'Удалить канал и сообщения'}</button><button className="secondary" type="button" disabled={busy} onClick={() => setDeleting(false)}>Отмена</button></form> : confirming ? <form className="form-stack" onSubmit={clear}><p>Все сообщения этого канала будут удалены без возможности восстановления из приложения. Резервные копии это действие не затрагивает.</p><label>Для подтверждения введите: {channel.name}<input name="confirmation" required autoComplete="off" /></label><button className="danger" disabled={busy}>Удалить всю историю канала</button><button className="secondary" type="button" disabled={busy} onClick={() => setConfirming(false)}>Отмена</button></form> : <div className="form-stack"><button className="danger-text" onClick={() => setConfirming(true)}><Trash2 size={16} />Очистить историю канала</button><button className="danger-text" onClick={() => setDeleting(true)}><Trash2 size={16} />Удалить канал</button></div>}</div>}
+    </div>
   </Modal>;
 }
