@@ -17,6 +17,7 @@ import { ApiError, digest, hashPassword, newSecret, verifyPassword } from './sec
 import { createMediaService, type MediaService } from './media.ts';
 import { createSessionTransfers } from './session-transfer.ts';
 import { mentionNames } from './mentions.ts';
+import { decodeImage } from './image-attachment.ts';
 import { registerBroadcasts } from './broadcast-routes.ts';
 import type { StreamMedia } from './stream-media.ts';
 
@@ -311,11 +312,19 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     const ids = db.prepare('SELECT id FROM messages WHERE channelId = ? AND id < ? ORDER BY id DESC LIMIT 51').all(id, before ?? Number.MAX_SAFE_INTEGER) as { id: number }[];
     return { messages: ids.slice(0, 50).reverse().map(row => store.message(row.id)), hasMore: ids.length > 50 };
   });
-  app.post('/api/channels/:id/messages', { preHandler: auth, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req, reply) => {
+  app.post('/api/channels/:id/messages', { preHandler: auth, bodyLimit: 7 * 1024 * 1024, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req, reply) => {
     const id = channelId(req); requireChannel(id);
-    const { body } = z.object({ body: z.string().trim().min(1).max(4000) }).parse(req.body);
-    const inserted = db.prepare('INSERT INTO messages (channelId, userId, body, createdAt) VALUES (?, ?, ?, ?)').run(id, req.user!.id, body, Date.now());
-    const message = store.message(Number(inserted.lastInsertRowid));
+    const { body, image } = z.object({ body: z.string().trim().max(4000), image: z.string().max(7 * 1024 * 1024).optional() }).parse(req.body);
+    if (!body && !image) throw new ApiError(400, 'Напишите сообщение или прикрепите изображение.');
+    const attachment = image ? decodeImage(image) : null;
+    db.exec('BEGIN IMMEDIATE');
+    let message;
+    try {
+      const inserted = db.prepare('INSERT INTO messages (channelId, userId, body, createdAt) VALUES (?, ?, ?, ?)').run(id, req.user!.id, body, Date.now());
+      if (attachment) db.prepare('INSERT INTO message_images (messageId, mime, data) VALUES (?, ?, ?)').run(Number(inserted.lastInsertRowid), attachment.mime, attachment.data);
+      message = store.message(Number(inserted.lastInsertRowid));
+      db.exec('COMMIT');
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
     broadcast({ type: 'message', message });
     const mentions = new Set(mentionNames(body));
     if (mentions.size) for (const [socket, state] of sockets) {
@@ -325,6 +334,12 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     }
     sendUnread();
     return reply.code(201).send({ message });
+  });
+  app.get('/api/messages/:id/image', { preHandler: auth }, async (req, reply) => {
+    const id = z.coerce.number().int().positive().parse(channelId(req));
+    const image = db.prepare('SELECT mime, data FROM message_images WHERE messageId = ?').get(id) as { mime: string; data: Uint8Array } | undefined;
+    if (!image) throw new ApiError(404, 'Изображение не найдено.');
+    return reply.header('X-Content-Type-Options', 'nosniff').type(image.mime).send(Buffer.from(image.data));
   });
   app.delete('/api/messages/:id', { preHandler: auth }, async req => {
     const id = z.coerce.number().int().positive().parse(channelId(req));

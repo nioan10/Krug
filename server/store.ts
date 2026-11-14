@@ -7,7 +7,7 @@ import type { Config } from './config.ts';
 
 export type User = { id: string; username: string; displayName: string; role: 'admin' | 'member' };
 export type Channel = { id: string; name: string; kind: 'text' | 'voice'; description: string };
-export type Message = { id: number; channelId: string; body: string; createdAt: number; user: User };
+export type Message = { id: number; channelId: string; body: string; createdAt: number; user: User; image: boolean };
 export const DAY = 86400_000;
 
 export function openStore(config: Config) {
@@ -35,6 +35,10 @@ export function openStore(config: Config) {
     CREATE TABLE IF NOT EXISTS messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT, channelId TEXT NOT NULL REFERENCES channels(id),
       userId TEXT NOT NULL REFERENCES users(id), body TEXT NOT NULL, createdAt INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS message_images (
+      messageId INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+      mime TEXT NOT NULL, data BLOB NOT NULL
     );
     CREATE TABLE IF NOT EXISTS channel_reads (
       userId TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -66,8 +70,8 @@ export function openStore(config: Config) {
   const channel = (id: string) => db.prepare('SELECT * FROM channels WHERE id = ?').get(id) as Channel | undefined;
   const channels = () => db.prepare('SELECT * FROM channels ORDER BY rowid').all() as Channel[];
   const message = (id: number) => {
-    const row = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as { id: number; channelId: string; userId: string; body: string; createdAt: number } | undefined;
-    return row ? { id: row.id, channelId: row.channelId, body: row.body, createdAt: row.createdAt, user: publicUser(row.userId)! } : undefined;
+    const row = db.prepare('SELECT m.*, EXISTS(SELECT 1 FROM message_images i WHERE i.messageId = m.id) AS image FROM messages m WHERE m.id = ?').get(id) as { id: number; channelId: string; userId: string; body: string; createdAt: number; image: number } | undefined;
+    return row ? { id: row.id, channelId: row.channelId, body: row.body, createdAt: row.createdAt, user: publicUser(row.userId)!, image: Boolean(row.image) } : undefined;
   };
   const unread = (userId: string) => {
     const rows = db.prepare(`SELECT c.id,

@@ -32,6 +32,23 @@ async function member(app: App, admin: string, username = 'member') {
   assert.equal(response.statusCode, 201, response.body); return cookieOf(response);
 }
 
+test('images are private, persist with their messages and are deleted with them', async t => {
+  const app = await buildApp(config()); t.after(() => app.close());
+  const admin = await owner(app);
+  const image = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
+  const sent = await app.inject({ method: 'POST', url: '/api/channels/general/messages', headers: headers(admin), payload: { body: '', image } });
+  assert.equal(sent.statusCode, 201, sent.body);
+  const message = sent.json().message;
+  assert.equal(message.image, true);
+  assert.equal((await app.inject(`/api/messages/${message.id}/image`)).statusCode, 401);
+  const fetched = await app.inject({ url: `/api/messages/${message.id}/image`, headers: headers(admin) });
+  assert.equal(fetched.statusCode, 200); assert.equal(fetched.headers['content-type'], 'image/png');
+  assert.deepEqual(fetched.rawPayload, Buffer.from(image, 'base64'));
+  assert.equal((await app.inject({ method: 'POST', url: '/api/channels/general/messages', headers: headers(admin), payload: { body: '', image: Buffer.from('<svg onload="alert(1)"></svg>').toString('base64') } })).statusCode, 400);
+  assert.equal((await app.inject({ method: 'DELETE', url: `/api/messages/${message.id}`, headers: headers(admin) })).statusCode, 200);
+  assert.equal((await app.inject({ url: `/api/messages/${message.id}/image`, headers: headers(admin) })).statusCode, 404);
+});
+
 test('member directory requires a session and returns only public fields, including offline members', async t => {
   const app = await buildApp(config()); t.after(() => app.close());
   assert.equal((await app.inject('/api/users')).statusCode, 401);

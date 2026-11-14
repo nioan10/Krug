@@ -1,6 +1,6 @@
 export type User = { id: string; username: string; displayName: string; role: 'admin' | 'member' };
 export type Channel = { id: string; name: string; kind: 'text' | 'voice'; description: string };
-export type Message = { id: number; channelId: string; body: string; createdAt: number; user: User };
+export type Message = { id: number; channelId: string; body: string; createdAt: number; user: User; image?: boolean };
 export type Invite = { id: string; expiresAt: number; usedAt: number | null; createdAt: number };
 export type VoiceOccupant = User & { microphoneEnabled: boolean; deafened: boolean | null };
 export type VoicePresence = { rooms: Record<string, VoiceOccupant[]>; available: boolean };
