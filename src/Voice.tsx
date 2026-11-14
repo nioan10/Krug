@@ -75,7 +75,7 @@ function CallContent({ room, onLeave, notify, channelId, presence }: { room: Roo
     setChangingNoise(true);
     try {
       const track = room.localParticipant.getTrackPublication(Track.Source.Microphone)?.track;
-      if (track instanceof LocalAudioTrack) await track.applyConstraints({ noiseSuppression: enabled });
+      if (track instanceof LocalAudioTrack) await track.applyConstraints({ noiseSuppression: enabled, echoCancellation: true, autoGainControl: true });
       room.options.audioCaptureDefaults = { ...room.options.audioCaptureDefaults, noiseSuppression: enabled };
       setNoiseSuppression(enabled);
       try { localStorage.setItem('krug-noise-suppression', enabled ? 'on' : 'off'); } catch { /* Keep the current setting for this session. */ }
