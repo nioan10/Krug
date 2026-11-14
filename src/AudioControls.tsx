@@ -24,6 +24,7 @@ export function VolumeSlider({ label, value, max = 2, onChange }: { label: strin
 export function MicrophoneToggle({ volume, notify }: { volume: number; notify: (message: string) => void }) {
   const room = useRoomContext();
   const { localParticipant, microphoneTrack, isMicrophoneEnabled } = useLocalParticipant();
+  useEffect(() => { window.KrugAndroidNative?.setMicrophoneActive(isMicrophoneEnabled); return () => window.KrugAndroidNative?.setMicrophoneActive(false); }, [isMicrophoneEnabled]);
   const [busy, setBusy] = useState(false);
   const latestVolume = useRef(volume); latestVolume.current = volume;
   const mounted = useRef(true);

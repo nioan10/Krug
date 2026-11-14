@@ -45,6 +45,7 @@ public final class MainActivity extends Activity {
     private View fullScreenView;
     private WebChromeClient.CustomViewCallback fullScreenCallback;
     private AndroidUpdater updater;
+    private boolean callActive, microphoneActive;
 
     private static boolean trusted(Uri uri) {
         return uri != null && "https".equalsIgnoreCase(uri.getScheme()) &&
@@ -90,7 +91,18 @@ public final class MainActivity extends Activity {
 
     private int dp(int value) { return (int) (value * getResources().getDisplayMetrics().density + .5f); }
     public final class NativeBridge {
-        @android.webkit.JavascriptInterface public void setCallActive(boolean active) { runOnUiThread(() -> { if (!isFinishing() && !isDestroyed()) updater.setCallActive(active); }); }
+        @android.webkit.JavascriptInterface public void setCallActive(boolean active) { runOnUiThread(() -> { if (!isFinishing() && !isDestroyed()) { boolean joining = active && !callActive; callActive = active; updater.setCallActive(active); updateCallService(); if (joining) requestCallNotifications(); } }); }
+        @android.webkit.JavascriptInterface public void setMicrophoneActive(boolean active) { runOnUiThread(() -> { if (!isFinishing() && !isDestroyed()) { microphoneActive = active; updateCallService(); } }); }
+    }
+    private void updateCallService() {
+        Intent intent = new Intent(this, CallService.class).putExtra("microphone", microphoneActive);
+        if (!callActive) { stopService(intent); return; }
+        try { startForegroundService(intent); } catch (RuntimeException ignored) { /* A background start can be denied by Android. */ }
+    }
+    private void requestCallNotifications() {
+        if (Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED || getPreferences(MODE_PRIVATE).getBoolean("askedCallNotification", false)) return;
+        getPreferences(MODE_PRIVATE).edit().putBoolean("askedCallNotification", true).apply();
+        requestPermissions(new String[] { Manifest.permission.POST_NOTIFICATIONS }, 22);
     }
 
     private void openExternal(Uri uri) {
@@ -197,6 +209,7 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onDestroy() {
         updater.stop();
+        stopService(new Intent(this, CallService.class));
         if (mediaRequest != null) mediaRequest.deny();
         if (fileCallback != null) fileCallback.onReceiveValue(null);
         ((ViewGroup) web.getParent()).removeView(web); web.destroy();
