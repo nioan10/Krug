@@ -56,6 +56,7 @@ export function App() {
         const data = JSON.parse(event.data) as ServerEvent;
         if (data.type === 'unread') setUnread(data.channels);
         if (data.type === 'presence') setOnline(data.users);
+        if (data.type === 'mention') notify(`${data.author} упомянул(а) вас в «${data.channelName}»`);
         if (data.type === 'voice-presence') setVoicePresence({ rooms: data.rooms, available: data.available });
         if (data.type === 'channels') { setChannels(data.channels); setChannelsLoaded(true); }
         if (data.type === 'channel-deleted') {

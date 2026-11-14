@@ -32,6 +32,17 @@ async function member(app: App, admin: string, username = 'member') {
   assert.equal(response.statusCode, 201, response.body); return cookieOf(response);
 }
 
+test('member directory requires a session and returns only public fields, including offline members', async t => {
+  const app = await buildApp(config()); t.after(() => app.close());
+  assert.equal((await app.inject('/api/users')).statusCode, 401);
+  const admin = await owner(app);
+  await member(app, admin);
+  const users = (await app.inject({ url: '/api/users', headers: headers(admin) })).json().users;
+  assert.equal(users.length, 2);
+  assert.deepEqual(Object.keys(users[0]).sort(), ['displayName', 'id', 'role', 'username']);
+  assert.ok(users.some((person: { username: string }) => person.username === 'member'));
+});
+
 test('desktop update files require a short-lived update-only token and a safe filename', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'krug-update-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -151,12 +162,19 @@ test('websocket sends messages and rejects a foreign origin', async t => {
   await assert.rejects(app.injectWS('/api/events', { socket: testSocket, headers: { origin } }), /401/);
   const socket = await app.injectWS('/api/events', { socket: testSocket, headers: headers(regular) });
   t.after(() => socket.terminate());
+  const mentioned = new Promise<{ channelId: string; author: string }>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Mention not delivered')), 2000);
+    socket.on('message', data => { const event = JSON.parse(data.toString()); if (event.type === 'mention') { clearTimeout(timeout); resolve(event); } });
+  });
   const received = new Promise<unknown>((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('Message not delivered')), 2000);
     socket.on('message', data => { const event = JSON.parse(data.toString()); if (event.type === 'message') { clearTimeout(timeout); resolve(event.message.body); } });
   });
-  await app.inject({ method: 'POST', url: '/api/channels/general/messages', headers: headers(admin), payload: { body: 'Реальное сообщение' } });
-  assert.equal(await received, 'Реальное сообщение');
+  await app.inject({ method: 'POST', url: '/api/channels/general/messages', headers: headers(admin), payload: { body: 'Привет @member' } });
+  assert.equal(await received, 'Привет @member');
+  const mentionEvent = await mentioned;
+  assert.equal(mentionEvent.channelId, 'general');
+  assert.equal(mentionEvent.author, 'Владелец');
   const closed = new Promise<number>(resolve => socket.once('close', resolve));
   await app.inject({ method: 'POST', url: '/api/auth/logout', headers: headers(regular) });
   assert.equal(await closed, 1008);

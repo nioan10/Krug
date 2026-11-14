@@ -7,6 +7,7 @@ export type ServerEvent =
   | { type: 'channel-deleted'; channelId: string }
   | ({ type: 'voice-presence' } & VoicePresence)
   | { type: 'message'; message: Message }
+  | { type: 'mention'; channelId: string; channelName: string; author: string }
   | { type: 'message-deleted'; id: number; channelId: string }
   | { type: 'history-cleared'; channelId: string };
 export const events = new EventTarget();

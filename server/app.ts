@@ -16,6 +16,7 @@ import { openStore, DAY, type User } from './store.ts';
 import { ApiError, digest, hashPassword, newSecret, verifyPassword } from './security.ts';
 import { createMediaService, type MediaService } from './media.ts';
 import { createSessionTransfers } from './session-transfer.ts';
+import { mentionNames } from './mentions.ts';
 
 declare module 'fastify' { interface FastifyRequest { user: User | null; sessionHash: string | null } }
 const credentials = z.object({ username: z.string().trim().toLowerCase().regex(/^[a-z0-9_]{3,24}$/), password: z.string().min(12).max(128) });
@@ -249,6 +250,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     return reply.send(createReadStream(path));
   });
   app.get('/api/channels', { preHandler: auth }, async () => ({ channels: store.channels() }));
+  app.get('/api/users', { preHandler: auth }, async () => ({ users: db.prepare('SELECT id, username, displayName, role FROM users ORDER BY displayName COLLATE NOCASE').all() }));
   app.get('/api/unread', { preHandler: auth }, async req => ({ channels: store.unread(req.user!.id) }));
   app.post('/api/channels/:id/read', { preHandler: auth }, async req => {
     const id = channelId(req); requireChannel(id);
@@ -312,6 +314,12 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     const inserted = db.prepare('INSERT INTO messages (channelId, userId, body, createdAt) VALUES (?, ?, ?, ?)').run(id, req.user!.id, body, Date.now());
     const message = store.message(Number(inserted.lastInsertRowid));
     broadcast({ type: 'message', message });
+    const mentions = new Set(mentionNames(body));
+    if (mentions.size) for (const [socket, state] of sockets) {
+      if (state.user.id !== req.user!.id && mentions.has(state.user.username) && store.sessionUser(state.hash)) {
+        send(socket, { type: 'mention', channelId: id, channelName: requireChannel(id).name, author: req.user!.displayName });
+      }
+    }
     sendUnread();
     return reply.code(201).send({ message });
   });
