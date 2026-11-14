@@ -292,12 +292,18 @@ test('room presence reports media participants, deduplicates users and updates c
   const friend = (await app.inject({ url: '/api/me', headers: headers(regular) })).json().user;
   assert.equal((await app.inject('/api/voice-presence')).statusCode, 401);
   identities = [{ identity: friend.id, microphoneEnabled: false }, { identity: friend.id, microphoneEnabled: false }, { identity: 'unknown-user', microphoneEnabled: false }];
-  assert.equal((await app.inject({ method: 'POST', url: '/api/voice-state', headers: headers(regular), payload: { channelId: 'lounge', deafened: true } })).statusCode, 200);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/voice-state', headers: headers(regular), payload: { channelId: 'lounge', deafened: true, afk: true } })).statusCode, 200);
   assert.equal((await app.inject({ method: 'POST', url: '/api/voice-state', headers: headers(), payload: { channelId: 'lounge', deafened: true } })).statusCode, 401);
   const first = (await app.inject({ url: '/api/voice-presence', headers: headers(admin) })).json();
-  assert.equal(first.available, true); assert.deepEqual(first.rooms.lounge, [{ ...friend, microphoneEnabled: false, deafened: true }]); assert.equal(first.rooms.unknown, undefined);
+  assert.equal(first.available, true); assert.deepEqual(first.rooms.lounge, [{ ...friend, microphoneEnabled: false, deafened: true, afk: true }]); assert.equal(first.rooms.unknown, undefined);
   await app.inject({ url: '/api/voice-presence', headers: headers(admin) }); assert.equal(calls, 1);
   const socket = await app.injectWS('/api/events', { socket: testSocket, headers: headers(admin) }); t.after(() => socket.terminate());
+  const returned = new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('AFK update not delivered')), 2000);
+    socket.on('message', data => { const event = JSON.parse(data.toString()); if (event.type === 'voice-presence' && event.rooms.lounge?.some((person: { id: string; afk: boolean }) => person.id === friend.id && !person.afk)) { clearTimeout(timer); resolve(); } });
+  });
+  assert.equal((await app.inject({ method: 'POST', url: '/api/voice-state', headers: headers(regular), payload: { channelId: 'lounge', deafened: true, afk: false } })).statusCode, 200);
+  await returned;
   identities = [];
   const empty = new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('Presence update not delivered')), 6500);

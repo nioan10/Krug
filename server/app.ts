@@ -37,7 +37,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
   const attempts = new Map<string, { count: number; expires: number }>();
   const updateTokens = new Map<string, { expires: number; migrationAware: boolean }>();
   const sessionTransfers = createSessionTransfers();
-  const voiceAudioStates = new Map<string, { channelId: string; deafened: boolean; expiresAt: number }>();
+  const voiceAudioStates = new Map<string, { channelId: string; deafened: boolean; afk: boolean; expiresAt: number }>();
   const deletingChannels = new Set<string>();
   const dummy = await hashPassword(newSecret());
   const sessionCookie = config.NODE_ENV === 'production' ? '__Host-krug' : 'krug_session';
@@ -110,7 +110,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
   };
   const requireChannel = (id: string) => { const channel = store.channel(id); if (!channel) throw new ApiError(404, 'Канал не найден.'); if (deletingChannels.has(id)) throw new ApiError(409, 'Канал удаляется.'); return channel; };
   const authRate = { rateLimit: { max: 12, timeWindow: '15 minutes' } };
-  let voicePresence: { rooms: Record<string, (User & { microphoneEnabled: boolean; deafened: boolean | null })[]>; available: boolean } = { rooms: {}, available: false };
+  let voicePresence: { rooms: Record<string, (User & { microphoneEnabled: boolean; deafened: boolean | null; afk: boolean })[]>; available: boolean } = { rooms: {}, available: false };
   let presenceRequest: Promise<void> | undefined;
   let presenceCheckedAt = 0;
   let closing = false;
@@ -127,7 +127,8 @@ export async function buildApp(config: Config, media: MediaService = createMedia
             const user = store.publicUser(person.identity);
             const audioState = voiceAudioStates.get(person.identity);
             const deafened = audioState && audioState.channelId === channel.id && audioState.expiresAt > Date.now() ? audioState.deafened : null;
-            return user ? [{ ...user, microphoneEnabled: person.microphoneEnabled, deafened }] : [];
+            const afk = Boolean(audioState && audioState.channelId === channel.id && audioState.expiresAt > Date.now() && audioState.afk);
+            return user ? [{ ...user, microphoneEnabled: person.microphoneEnabled, deafened, afk }] : [];
           }),
         ]));
         next = { rooms, available: true };
@@ -265,10 +266,16 @@ export async function buildApp(config: Config, media: MediaService = createMedia
   });
   app.get('/api/voice-presence', { preHandler: auth }, async () => { await refreshVoicePresence(); return voicePresence; });
   app.post('/api/voice-state', { preHandler: auth }, async req => {
-    const { channelId: id, deafened } = z.object({ channelId: z.string().min(1).max(64), deafened: z.boolean() }).parse(req.body);
+    const { channelId: id, deafened, afk } = z.object({ channelId: z.string().min(1).max(64), deafened: z.boolean(), afk: z.boolean().default(false) }).parse(req.body);
     const channel = requireChannel(id);
     if (channel.kind !== 'voice') throw new ApiError(400, 'Это текстовый канал.');
-    voiceAudioStates.set(req.user!.id, { channelId: id, deafened, expiresAt: Date.now() + 30_000 });
+    voiceAudioStates.set(req.user!.id, { channelId: id, deafened, afk, expiresAt: Date.now() + 30_000 });
+    const occupants = voicePresence.rooms[id];
+    const current = occupants?.find(person => person.id === req.user!.id);
+    if (current && (current.afk !== afk || current.deafened !== deafened)) {
+      voicePresence = { ...voicePresence, rooms: { ...voicePresence.rooms, [id]: occupants.map(person => person.id === req.user!.id ? { ...person, deafened, afk } : person) } };
+      broadcast({ type: 'voice-presence', ...voicePresence });
+    }
     void refreshVoicePresence();
     return { ok: true };
   });

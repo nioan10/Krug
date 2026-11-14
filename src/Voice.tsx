@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { LiveKitRoom, TrackToggle, useParticipants, useTracks, VideoTrack, useIsSpeaking, useIsMuted, useConnectionState, StartAudio, type TrackReference } from '@livekit/components-react';
 import { Room, Track, ConnectionState, ParticipantEvent, LocalAudioTrack, type Participant, type RoomOptions } from 'livekit-client';
-import { Headphones, HeadphoneOff, Mic, MicOff, MonitorUp, PhoneOff, Settings2, Video, Maximize2, Radio, Volume2 } from 'lucide-react';
+import { Coffee, Headphones, HeadphoneOff, Mic, MicOff, MonitorUp, PhoneOff, Settings2, Video, Maximize2, Radio, Volume2 } from 'lucide-react';
 import { Avatar, Modal } from './ui';
 import { IncomingAudio, MicrophoneToggle, VolumeSlider } from './AudioControls';
 import { loadAudioLevels, saveAudioLevels } from './audio-levels';
@@ -29,15 +29,16 @@ function VoiceStatus({ participant, deafened }: { participant: Participant; deaf
   const audioLabel = deafened === null ? 'Состояние звука неизвестно' : deafened ? 'Входящий звук выключен' : 'Входящий звук включён';
   return <div className="person-states"><span role="img" className={microphoneEnabled ? 'voice-state-on' : 'voice-state-off'} title={micLabel} aria-label={micLabel}>{microphoneEnabled ? <Mic size={15} /> : <MicOff size={15} />}</span><span role="img" className={deafened === null ? 'voice-state-unknown' : deafened ? 'voice-state-off' : 'voice-state-on'} title={audioLabel} aria-label={audioLabel}>{deafened ? <HeadphoneOff size={15} /> : <Headphones size={15} />}</span></div>;
 }
-function Person({ participant, onVolume, deafened }: { participant: Participant; onVolume: () => void; deafened: boolean | null }) {
+function AfkBadge() { return <div className="afk-badge" aria-label="Отошёл"><span className="afk-orbit" aria-hidden="true">✦</span><Coffee size={13} /> АФК</div>; }
+function Person({ participant, onVolume, deafened, afk }: { participant: Participant; onVolume: () => void; deafened: boolean | null; afk: boolean }) {
   const speaking = useIsSpeaking(participant);
-  return <div className={`person-tile ${speaking ? 'speaking' : ''}`}><Avatar name={participant.name || participant.identity} size="large" /><span className="person-name">{participant.name || 'Участник'}{participant.isLocal && <small>вы</small>}</span><VoiceStatus participant={participant} deafened={deafened} /><button className="participant-volume icon-button" title={participant.isLocal ? 'Громкость микрофона' : `Громкость: ${participant.name || participant.identity}`} aria-label={participant.isLocal ? 'Громкость микрофона' : `Громкость: ${participant.name || participant.identity}`} onClick={onVolume}><Volume2 size={16} /></button>{speaking && <span className="speaking-label">Говорит</span>}</div>;
+  return <div className={`person-tile ${speaking ? 'speaking' : ''}`}>{afk && <AfkBadge />}<Avatar name={participant.name || participant.identity} size="large" /><span className="person-name">{participant.name || 'Участник'}{participant.isLocal && <small>вы</small>}</span><VoiceStatus participant={participant} deafened={deafened} /><button className="participant-volume icon-button" title={participant.isLocal ? 'Громкость микрофона' : `Громкость: ${participant.name || participant.identity}`} aria-label={participant.isLocal ? 'Громкость микрофона' : `Громкость: ${participant.name || participant.identity}`} onClick={onVolume}><Volume2 size={16} /></button>{speaking && !afk && <span className="speaking-label">Говорит</span>}</div>;
 }
-function ParticipantTile({ participant, camera, onVolume, deafened }: { participant: Participant; camera?: TrackReference; onVolume: () => void; deafened: boolean | null }) {
+function ParticipantTile({ participant, camera, onVolume, deafened, afk }: { participant: Participant; camera?: TrackReference; onVolume: () => void; deafened: boolean | null; afk: boolean }) {
   const muted = useIsMuted(camera ?? { participant, source: Track.Source.Camera });
   const speaking = useIsSpeaking(participant);
-  if (!camera || !hasVisibleCamera(camera.publication, muted)) return <Person participant={participant} onVolume={onVolume} deafened={deafened} />;
-  return <div className={`camera-tile ${speaking ? 'speaking' : ''}`}><VideoTrack trackRef={camera} /><span>{participant.name}{participant.isLocal ? ' · вы' : ''}</span><VoiceStatus participant={participant} deafened={deafened} /><button className="participant-volume icon-button" title={`Громкость: ${participant.name || participant.identity}`} aria-label={`Громкость: ${participant.name || participant.identity}`} onClick={onVolume}><Volume2 size={16} /></button>{speaking && <div className="speaking-label">Говорит</div>}</div>;
+  if (!camera || !hasVisibleCamera(camera.publication, muted)) return <Person participant={participant} onVolume={onVolume} deafened={deafened} afk={afk} />;
+  return <div className={`camera-tile ${speaking ? 'speaking' : ''}`}><VideoTrack trackRef={camera} />{afk && <AfkBadge />}<span>{participant.name}{participant.isLocal ? ' · вы' : ''}</span><VoiceStatus participant={participant} deafened={deafened} /><button className="participant-volume icon-button" title={`Громкость: ${participant.name || participant.identity}`} aria-label={`Громкость: ${participant.name || participant.identity}`} onClick={onVolume}><Volume2 size={16} /></button>{speaking && !afk && <div className="speaking-label">Говорит</div>}</div>;
 }
 function CallContent({ room, onLeave, notify, channelId, presence }: { room: Room; onLeave: () => void; notify: (message: string) => void; channelId: string; presence: VoiceOccupant[] }) {
   const participants = useParticipants();
@@ -65,6 +66,7 @@ function CallContent({ room, onLeave, notify, channelId, presence }: { room: Roo
     return () => { cancelled = true; clearInterval(timer); };
   }, [room, state]);
   const [deafened, setDeafened] = useState(false);
+  const [afk, setAfk] = useState(false);
   const [noiseSuppression, setNoiseSuppression] = useState(() => { try { return localStorage.getItem('krug-noise-suppression') !== 'off'; } catch { return true; } });
   const [changingNoise, setChangingNoise] = useState(false);
   useEffect(() => { room.options.audioCaptureDefaults = { ...room.options.audioCaptureDefaults, noiseSuppression }; }, [room, noiseSuppression]);
@@ -83,10 +85,10 @@ function CallContent({ room, onLeave, notify, channelId, presence }: { room: Roo
   const stateRequests = useRef<Promise<void>>(Promise.resolve());
   useEffect(() => {
     if (state !== ConnectionState.Connected) return;
-    const report = () => { stateRequests.current = stateRequests.current.catch(() => {}).then(() => api('/voice-state', 'POST', { channelId, deafened })).then(() => {}).catch(() => {}); };
+    const report = () => { stateRequests.current = stateRequests.current.catch(() => {}).then(() => api('/voice-state', 'POST', { channelId, deafened, afk })).then(() => {}).catch(() => {}); };
     report(); const interval = setInterval(report, 12_000);
     return () => clearInterval(interval);
-  }, [channelId, state, deafened]);
+  }, [channelId, state, deafened, afk]);
   const [devices, setDevices] = useState(false);
   const [levels, setLevels] = useState(loadAudioLevels);
   const [volumeTarget, setVolumeTarget] = useState<string | null>(null);
@@ -106,7 +108,7 @@ function CallContent({ room, onLeave, notify, channelId, presence }: { room: Roo
       <div className={`people-grid ${screens.length ? 'with-screen' : ''}`}>{participants.map(p => {
         const camera = cameras.find(t => t.participant.identity === p.identity);
         const audioState = p.isLocal ? deafened : presence.find(person => person.id === p.identity)?.deafened ?? null;
-        return <ParticipantTile participant={p} camera={camera} key={p.identity} onVolume={() => openVolume(p)} deafened={audioState} />;
+        return <ParticipantTile participant={p} camera={camera} key={p.identity} onVolume={() => openVolume(p)} deafened={audioState} afk={p.isLocal ? afk : Boolean(presence.find(person => person.id === p.identity)?.afk)} />;
       })}</div>
       {participants.length === 1 && !screens.length && <div className="waiting-note"><Radio size={18} /><span>В комнате пока только вы.</span></div>}
     </div>
@@ -115,6 +117,7 @@ function CallContent({ room, onLeave, notify, channelId, presence }: { room: Roo
       <button className={deafened ? 'control-off' : ''} title={deafened ? 'Включить звук' : 'Выключить входящий звук'} aria-label={deafened ? 'Включить звук' : 'Выключить входящий звук'} aria-pressed={deafened} onClick={() => setDeafened(!deafened)}>{deafened ? <HeadphoneOff size={21} /> : <Headphones size={21} />}</button>
       <TrackToggle source={Track.Source.Camera} showIcon={false} aria-label="Включить или выключить камеру" title="Камера" onDeviceError={() => notify('Нет доступа к камере. Проверьте разрешения браузера.')}><Video size={21} /></TrackToggle>
       {window.krugDesktop ? <DesktopShare notify={notify} /> : <TrackToggle source={Track.Source.ScreenShare} showIcon={false} aria-label="Демонстрация экрана" title="Демонстрация экрана" captureOptions={{ audio: true, resolution: { width: 1920, height: 1080, frameRate: 30 } }} onDeviceError={() => notify('Демонстрация не началась. Выберите экран или окно в диалоге браузера.')}><MonitorUp size={21} /><span>Поделиться</span></TrackToggle>}
+      <button className={afk ? 'afk-active' : ''} aria-label={afk ? 'Я вернулся' : 'Я отошёл'} aria-pressed={afk} title={afk ? 'Вернуться' : 'Показать, что вы отошли'} onClick={() => setAfk(!afk)}><Coffee size={20} /><span>{afk ? 'Вернулся' : 'АФК'}</span></button>
       <button title="Устройства" aria-label="Настроить устройства" onClick={() => setDevices(true)}><Settings2 size={20} /></button>
       <button className="hangup" title="Выйти из звонка" aria-label="Выйти из звонка" onClick={onLeave}><PhoneOff size={21} /></button>
     </div><StartAudio label="Нажмите, чтобы включить звук" /></div>
