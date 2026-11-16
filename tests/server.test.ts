@@ -231,6 +231,31 @@ test('desktop update files require a short-lived update-only token and a safe fi
   assert.match((await app.inject({ url: '/api/desktop-updates/latest.yml', headers: authorization })).body, /^version: 0\.0\.0\n/);
 });
 
+test('Windows downloads survive exhausted chat limits, support resume, and still require a session', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'krug-download-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, 'manual-latest.yml'), 'version: 0.2.3\npath: Krug-Setup-0.2.3.exe\n');
+  writeFileSync(join(dir, 'Krug-Setup-0.2.3.exe'), '0123456789');
+  const app = await buildApp({ ...config(), DESKTOP_UPDATE_DIR: dir }); t.after(() => app.close());
+  const admin = await owner(app);
+  for (let i = 0; i < 180; i++) await app.inject({ url: '/api/channels', headers: headers(admin) });
+  assert.equal((await app.inject({ url: '/api/channels', headers: headers(admin) })).statusCode, 429);
+  const request = (extra = {}) => app.inject({ url: '/api/desktop-installer', headers: { ...headers(admin), ...extra } });
+  const full = await request(); assert.equal(full.statusCode, 200); assert.equal(full.body, '0123456789');
+  const partial = await request({ range: 'bytes=4-6' });
+  assert.equal(partial.statusCode, 206); assert.equal(partial.body, '456'); assert.equal(partial.headers['content-range'], 'bytes 4-6/10');
+  assert.equal((await request({ range: 'bytes=-3' })).body, '789');
+  assert.equal((await request({ range: 'bytes=4-' })).body, '456789');
+  assert.equal((await request({ range: 'bytes=4-', 'if-range': 'old-version' })).statusCode, 200);
+  for (const range of ['bytes=99-', 'bytes=4-2', 'bytes=-0', 'bytes=0-1,4-6']) assert.equal((await request({ range })).statusCode, 416);
+  const head = await app.inject({ method: 'HEAD', url: '/api/desktop-installer', headers: headers(admin) });
+  assert.equal(head.statusCode, 200); assert.equal(head.headers['content-length'], '10'); assert.equal(head.body, '');
+  assert.equal((await app.inject({ url: '/api/desktop-installer', headers: { range: 'bytes=0-1' } })).statusCode, 401);
+  const another = await app.inject({ method: 'POST', url: '/api/auth/login', headers: headers(), payload: { username: 'owner', password } });
+  assert.equal(another.statusCode, 200);
+  assert.equal((await app.inject({ url: '/api/channels', headers: headers(cookieOf(another)) })).statusCode, 200);
+});
+
 test('desktop session migration is same-origin, single-use and bound to a live session', async t => {
   const app = await buildApp(config()); t.after(() => app.close());
   assert.equal((await app.inject({ method: 'POST', url: '/api/desktop-migration/issue', headers: headers() })).statusCode, 401);

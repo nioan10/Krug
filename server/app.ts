@@ -22,6 +22,7 @@ import { registerBroadcasts } from './broadcast-routes.ts';
 import type { StreamMedia } from './stream-media.ts';
 import { sessionStore } from './sessions.ts';
 import { registerEncryption } from './encryption.ts';
+import { sendDownload } from './download.ts';
 
 declare module 'fastify' { interface FastifyRequest { user: User | null; sessionHash: string | null } }
 const credentials = z.object({ username: z.string().trim().toLowerCase().regex(/^[a-z0-9_]{3,24}$/), password: z.string().min(12).max(128) });
@@ -47,7 +48,13 @@ export async function buildApp(config: Config, media: MediaService = createMedia
   const cookieOptions = { httpOnly: true, sameSite: 'strict' as const, secure: config.NODE_ENV === 'production', path: '/', maxAge: 7 * DAY / 1000 };
 
   await app.register(cookie);
-  await app.register(rateLimit, { max: 180, timeWindow: '1 minute', errorResponseBuilder: () => new ApiError(429, 'Слишком много запросов. Подождите и повторите попытку.') });
+  const requestRateKey = (req: FastifyRequest) => {
+    const token = req.cookies[sessionCookie]; const hash = token ? digest(token) : '';
+    // Validate the session: random cookies must never create fresh rate-limit buckets.
+    return !req.url.startsWith('/api/auth/') && hash && sessions.active(hash) ? `session:${hash}` : `ip:${req.ip}`;
+  };
+  await app.register(rateLimit, { max: 180, timeWindow: '1 minute', keyGenerator: requestRateKey, errorResponseBuilder: () => new ApiError(429, 'Слишком много запросов. Подождите и повторите попытку.') });
+  const downloadRate = { rateLimit: { max: 30, timeWindow: '1 minute' } };
   await app.register(helmet, {
     contentSecurityPolicy: { directives: {
       defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"],
@@ -339,7 +346,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     } catch { throw new ApiError(404, 'Обновление Android пока недоступно.'); }
   };
   app.get('/api/android-updates/latest.json', { preHandler: auth }, async req => readAndroidManifest(req.headers['x-krug-android-update-mode'] === 'manual-v1'));
-  app.get('/api/android-installer', { preHandler: auth }, async (_req, reply) => {
+  app.get('/api/android-installer', { preHandler: auth, config: downloadRate }, async (_req, reply) => {
     let manifest; try { manifest = await readAndroidManifest(true); } catch { manifest = await readAndroidManifest(); }
     return reply.redirect(`/api/android-updates/${manifest.file}`);
   });
@@ -347,7 +354,7 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     desktop: existsSync(resolve(config.DESKTOP_UPDATE_DIR, 'manual-latest.yml')),
     android: existsSync(resolve(config.DESKTOP_UPDATE_DIR, 'android', 'manual-latest.json')),
   }));
-  app.get('/api/android-updates/:file', { preHandler: auth }, async (req, reply) => {
+  app.get('/api/android-updates/:file', { preHandler: auth, config: downloadRate }, async (req, reply) => {
     const { file } = z.object({ file: z.string() }).parse(req.params);
     const path = androidFile(file);
     let info; try { info = await stat(path); } catch { throw new ApiError(404, 'Установщик пока недоступен.'); }
@@ -355,17 +362,14 @@ export async function buildApp(config: Config, media: MediaService = createMedia
     reply.header('Content-Length', info.size).header('Content-Disposition', `attachment; filename="${file}"`).type('application/vnd.android.package-archive');
     return reply.send(createReadStream(path));
   });
-  app.get('/api/desktop-installer', { preHandler: auth }, async (_req, reply) => {
+  app.get('/api/desktop-installer', { preHandler: auth, config: downloadRate }, async (req, reply) => {
     let manifest: string;
     try { manifest = await readFile(resolve(config.DESKTOP_UPDATE_DIR, 'manual-latest.yml'), 'utf8'); }
     catch { try { manifest = await readFile(resolve(config.DESKTOP_UPDATE_DIR, 'latest.yml'), 'utf8'); } catch { throw new ApiError(404, 'Установщик пока недоступен.'); } }
     const file = /^path:\s*(Krug-Setup-\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\.exe)\s*$/m.exec(manifest)?.[1];
     if (!file) throw new ApiError(503, 'Установщик пока недоступен.');
     const path = resolve(config.DESKTOP_UPDATE_DIR, file);
-    let info; try { info = await stat(path); } catch { throw new ApiError(404, 'Установщик пока недоступен.'); }
-    if (!info.isFile()) throw new ApiError(404, 'Установщик пока недоступен.');
-    reply.header('Content-Length', info.size).header('Content-Disposition', 'attachment; filename="Okrug-Setup.exe"').type('application/octet-stream');
-    return reply.send(createReadStream(path));
+    return sendDownload(req, reply, path, 'Okrug-Setup.exe');
   });
   app.get('/api/desktop-updates/access', { preHandler: auth }, async req => {
     const now = Date.now();
