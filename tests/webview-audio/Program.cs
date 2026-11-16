@@ -79,8 +79,8 @@ sealed class FakeAccess : HttpMessageHandler
 {
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
-        if (request.RequestUri?.AbsoluteUri != "https://example.invalid/api/desktop-updates/access" ||
-            !request.Headers.TryGetValues("X-Krug-Desktop-Capability", out var capabilities) || capabilities.Single() != "migration-v1")
+        if (request.Method != HttpMethod.Get || request.RequestUri?.AbsoluteUri != "https://example.invalid/api/desktop-updates/access" ||
+            !request.Headers.TryGetValues("X-Krug-Desktop-Capability", out var capabilities) || capabilities.Single() != "manual-v1")
             throw new Exception("Wrong access request.");
         return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"token\":\"" + new string('a', 43) + "\"}") });
     }
