@@ -17,6 +17,7 @@ import { ScreenShares } from './ScreenShares';
 import { VoiceAccessMonitor, type VoiceAccess } from './voice-access';
 import { VoiceRekey } from './voice-rekey';
 import { useEncryption } from './EncryptionSettings';
+import { MicrophoneActivation } from './MicrophoneActivation';
 
 export type Call = { channel: Channel; token: string; url: string; e2ee?: { key: ArrayBuffer; roster: string } };
 const options: RoomOptions = {
@@ -144,7 +145,7 @@ function CallContent({ room, onLeave, notify, channelId, presence, checkingAcces
       <button title="Устройства" aria-label="Настроить устройства" onClick={() => setDevices(true)}><Settings2 size={20} /></button>
       <button className="hangup" title="Выйти из звонка" aria-label="Выйти из звонка" onClick={onLeave}><PhoneOff size={21} /></button>
     </div><StartAudio label="Нажмите, чтобы включить звук" /></div>
-    {devices && <DeviceSettings onClose={closeDevices} notify={notify}><label className="noise-setting"><span><strong>Шумоподавление</strong><small>Уменьшает фоновый шум микрофона средствами устройства</small></span><input type="checkbox" checked={noiseSuppression} disabled={changingNoise} onChange={event => void changeNoiseSuppression(event.target.checked)} /></label><VolumeSlider label="Входящий звук" value={levels.master} onChange={master => setLevels(old => ({ ...old, master }))} /><VolumeSlider label="Громкость микрофона" value={levels.microphone} max={2} onChange={microphone => setLevels(old => ({ ...old, microphone }))} /><p className="tiny">Уровень микрофона меняет то, как вас слышат другие. Выше 100% — усиление; если голос искажается, уменьшите уровень.</p></DeviceSettings>}
+    {devices && <DeviceSettings onClose={closeDevices} notify={notify}><label className="noise-setting"><span><strong>Шумоподавление</strong><small>Уменьшает фоновый шум микрофона средствами устройства</small></span><input type="checkbox" checked={noiseSuppression} disabled={changingNoise} onChange={event => void changeNoiseSuppression(event.target.checked)} /></label><MicrophoneActivation /><VolumeSlider label="Входящий звук" value={levels.master} onChange={master => setLevels(old => ({ ...old, master }))} /><VolumeSlider label="Громкость микрофона" value={levels.microphone} max={2} onChange={microphone => setLevels(old => ({ ...old, microphone }))} /><p className="tiny">Уровень микрофона меняет то, как вас слышат другие. Выше 100% — усиление; если голос искажается, уменьшите уровень.</p></DeviceSettings>}
     {volumeTarget && <Modal title="Громкость участника" onClose={closeVolume}><div className="form-stack"><VolumeSlider label={target?.name || 'Участник'} value={levels.participants[volumeTarget] ?? 1} onChange={value => setLevels(old => ({ ...old, participants: { ...old.participants, [volumeTarget]: value } }))} /><p className="muted">Меняет громкость голоса. Звук демонстрации настраивается отдельно, под её экраном.</p>{!target && <p className="tiny">Участник вышел из комнаты. Настройка сохранена.</p>}<button className="secondary" onClick={() => setLevels(old => ({ ...old, participants: { ...old.participants, [volumeTarget]: 1 } }))}>Сбросить до 100%</button></div></Modal>}
   </div>;
 }
