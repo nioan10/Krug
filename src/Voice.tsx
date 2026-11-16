@@ -121,7 +121,7 @@ function CallContent({ room, onLeave, notify, channelId, presence, checkingAcces
     <RestoreAudioOutput notify={notify} />
     <IncomingAudio levels={levels} muted={deafened} />
     <div className="call-overline"><span className={`connection-label ${state === ConnectionState.Connected ? 'good' : ''}`}><span className="live-dot" />{state === ConnectionState.Connected ? 'Подключено' : state === ConnectionState.Reconnecting || state === ConnectionState.SignalReconnecting ? 'Восстанавливаем связь…' : 'Подключаемся…'}{state === ConnectionState.Connected && <span className="call-ping" title="Задержка до голосового сервера">{ping === null ? 'Пинг —' : `${ping} мс`}</span>}</span><span>{room.options.encryption ? '🔒 Сквозное шифрование · ' : ''}{participants.length} в комнате</span></div>
-    {checkingAccess && <div className="call-access-pending" role="status">Проверяем доступ… Связь с сервером временно недоступна.{room.options.encryption ? ' Звонок остаётся зашифрованным.' : ''}</div>}
+    {checkingAccess && <div className="call-access-pending" role="status">Проверяем доступ и ключ звонка…{room.options.encryption ? ' Шифрование остаётся включённым.' : ''}</div>}
     <div className="call-stage">
       <ScreenShares screens={screens} notify={notify} audioFor={track => ({
         available: tracks.some(t => t.source === Track.Source.ScreenShareAudio && t.participant.identity === track.participant.identity),
