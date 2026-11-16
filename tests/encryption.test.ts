@@ -193,3 +193,20 @@ test('rotating a call removes the old room connection without kicking the same s
   assert.ok(removed.includes(`${oldRoom}:${a.device.identity}`));
   assert.ok(!removed.includes(`${newRoom}:${a.device.identity}`));
 });
+
+test('adding a device allows encrypted handover but revoking a key immediately invalidates that room', async t => {
+  let people: { identity: string; microphoneEnabled: boolean; room: string }[] = [];
+  const removed: string[] = [];
+  const app = await appFor(t, { async participants() { return { lounge: people }; }, async removeParticipant(room) { removed.push(room); } });
+  const owner = await register(app, 'owner'), a = await device(app, owner.cookie);
+  const friend = await register(app, 'friend', owner.cookie), b = await device(app, friend.cookie);
+  const before = await state(app, owner.cookie);
+  const envelope = await seal({ ...payload(a.device, before.roster), kind: 'room', channelId: 'lounge', roomKey: 'A'.repeat(43) + '=' }, a.privateKey, before.devices);
+  assert.equal((await app.inject({ method: 'POST', url: '/api/encryption/rooms/lounge', headers: headers(owner.cookie), payload: envelope })).statusCode, 200);
+  const oldRoom = `lounge.e2ee.${before.roster}`;
+  people = [{ identity: a.device.identity, room: oldRoom, microphoneEnabled: true }];
+  const second = await login(app, 'owner'); await device(app, second);
+  await new Promise(resolve => setTimeout(resolve, 3200)); assert(!removed.includes(oldRoom));
+  await app.inject({ method: 'POST', url: '/api/auth/logout', headers: headers(friend.cookie) });
+  await new Promise(resolve => setTimeout(resolve, 3200)); assert(removed.includes(oldRoom));
+});

@@ -15,6 +15,8 @@ import { DesktopShare } from './DesktopShare';
 import { hasVisibleCamera } from './camera-state';
 import { ScreenShares } from './ScreenShares';
 import { VoiceAccessMonitor, type VoiceAccess } from './voice-access';
+import { VoiceRekey } from './voice-rekey';
+import { useEncryption } from './EncryptionSettings';
 
 export type Call = { channel: Channel; token: string; url: string; e2ee?: { key: ArrayBuffer; roster: string } };
 const options: RoomOptions = {
@@ -147,50 +149,68 @@ function CallContent({ room, onLeave, notify, channelId, presence, checkingAcces
   </div>;
 }
 export function Voice({ call, presence, onLeave, notify }: { call: Call; presence: VoiceOccupant[]; onLeave: () => void; notify: (s: string) => void }) {
+  const { manager } = useEncryption();
+  const managerRef = useRef(manager); managerRef.current = manager;
   const [room, setRoom] = useState<Room>();
   const [checkingAccess, setCheckingAccess] = useState(false);
   const active = useRef(false);
+  const rotating = useRef(false);
   useEffect(() => {
     let disposed = false;
     active.current = true;
     const audioContext = new AudioContext({ latencyHint: 'interactive' });
-    let nextRoom: Room | undefined; let worker: Worker | undefined;
+    let nextRoom: Room | undefined; let worker: Worker | undefined; let rekey: VoiceRekey | undefined;
+    let keyProvider: ExternalE2EEKeyProvider | undefined;
     async function prepare() {
       let encryption;
       if (call.e2ee) {
         if (!isE2EESupported()) throw Error('Этот браузер не поддерживает сквозное шифрование звонков. Обновите приложение или браузер.');
         worker = new E2EEWorker();
-        const keyProvider = new ExternalE2EEKeyProvider();
+        keyProvider = new ExternalE2EEKeyProvider();
         await keyProvider.setKey(call.e2ee.key);
         encryption = { keyProvider, worker };
       }
       if (disposed) { worker?.terminate(); return; }
       nextRoom = new Room({ ...options, encryption, webAudioMix: { audioContext } });
+      if (keyProvider) rekey = new VoiceRekey(nextRoom, keyProvider);
       if (call.e2ee) {
         await nextRoom.setE2EEEnabled(true);
-        nextRoom.on(RoomEvent.EncryptionError, () => { if (!disposed) { notify('Ошибка шифрования. Звонок остановлен.'); onLeave(); } });
+        nextRoom.on(RoomEvent.EncryptionError, () => { if (!disposed && !rotating.current) { notify('Ошибка шифрования. Звонок остановлен.'); onLeave(); } });
         nextRoom.on(RoomEvent.TrackSubscribed, (_track, publication) => {
           if (!publication.isEncrypted && !disposed) { publication.setSubscribed(false); notify('Получен незашифрованный поток. Звонок остановлен.'); onLeave(); }
         });
       }
       if (!disposed) setRoom(nextRoom);
     }
-    void prepare().catch(error => { if (!disposed) { notify(error instanceof Error ? error.message : 'Не удалось включить шифрование звонка.'); onLeave(); } });
+    const prepared = prepare();
+    void prepared.catch(error => { if (!disposed) { notify(error instanceof Error ? error.message : 'Не удалось включить шифрование звонка.'); onLeave(); } });
     const monitor = new VoiceAccessMonitor({
       expected: { enabled: Boolean(call.e2ee), roster: call.e2ee?.roster },
       request: signal => api<VoiceAccess>(`/channels/${encodeURIComponent(call.channel.id)}/voice-access`, 'GET', undefined, signal),
       waiting: setCheckingAccess,
+      rotate: call.e2ee ? async (_state, signal) => {
+        rotating.current = true;
+        await prepared; signal.throwIfAborted();
+        const current = managerRef.current;
+        if (!current || !rekey) throw Error('Ключ устройства недоступен.');
+        const next = await current.roomKey(call.channel.id); signal.throwIfAborted();
+        const access = await api<{ token: string; url: string }>(`/channels/${call.channel.id}/voice-token`, 'POST', { roster: next.roster }, signal);
+        signal.throwIfAborted();
+        await rekey.switch(next.key, access.url, access.token, signal);
+        rotating.current = false;
+        return { enabled: true, roster: next.roster };
+      } : undefined,
       denied: message => { if (!disposed) { active.current = false; notify(message); onLeave(); } },
     });
     monitor.check();
     const off = subscribe(event => { if (event.type === 'encryption-changed' || event.type === 'ready') monitor.check(); });
     window.addEventListener('online', monitor.check);
     return () => {
-      disposed = true; active.current = false; monitor.stop(); off(); window.removeEventListener('online', monitor.check);
+      disposed = true; active.current = false; monitor.stop(); rekey?.stop(); off(); window.removeEventListener('online', monitor.check);
       void (nextRoom?.disconnect() ?? Promise.resolve()).finally(() => { worker?.terminate(); return audioContext.close(); }).catch(() => {});
     };
   }, []);
-  const onDisconnected = useCallback(() => { if (active.current) onLeave(); }, [onLeave]);
+  const onDisconnected = useCallback(() => { if (active.current && !rotating.current) onLeave(); }, [onLeave]);
   const onError = useCallback(() => notify('Не удалось подключиться к медиасерверу. Проверьте соединение и попробуйте снова.'), [notify]);
   const onMediaDeviceFailure = useCallback(() => notify('Браузер не дал доступ к устройству. Можно остаться слушателем и включить микрофон позже.'), [notify]);
   if (!room) return <div className="call-content">Подключаемся…</div>;

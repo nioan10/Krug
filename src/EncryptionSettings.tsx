@@ -34,7 +34,7 @@ export function useEncryptionController(user: User | null): EncryptionView {
       catch (e) { failed(e); }
     };
     void initialize();
-    const off = subscribe(event => { if (event.type === 'history-keys') manager?.historyChanged(); if (event.type === 'encryption-changed' || event.type === 'ready') void refresh(); });
+    const off = subscribe(event => { if (event.type === 'history-keys') manager?.historyChanged(event.messageId); if (event.type === 'encryption-changed' || event.type === 'ready') void refresh(); });
     const timer = setInterval(() => { void refresh(); }, 10_000);
     window.addEventListener('online', refresh);
     return () => { cancelled = true; clearInterval(timer); off(); window.removeEventListener('online', refresh); manager?.removeEventListener('change', changed); };

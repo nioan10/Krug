@@ -62,3 +62,30 @@ test('overlapping checks coalesce and a stopped call ignores late responses', as
   f.monitor.stop(); resolve({ enabled: false, roster: '' }); await flush(); t.mock.timers.tick(60_000); await flush();
   assert.deepEqual(f.denied, []); assert.deepEqual(f.waiting, [false]); assert.equal(requests, 2);
 });
+
+test('new membership rotates automatically and later checks use the installed key', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const denied: string[] = []; let rotations = 0;
+  const current = { enabled: true, roster: 'new-roster' };
+  const monitor = new VoiceAccessMonitor({ expected: valid, request: async () => current, waiting() {}, denied: m => denied.push(m), rotate: async state => { rotations++; return state; } });
+  t.after(() => monitor.stop()); monitor.check(); await flush();
+  t.mock.timers.tick(1000); await flush();
+  assert.equal(rotations, 1); assert.deepEqual(denied, []);
+});
+
+test('a second membership change during rotation retries without dropping the call', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let attempts = 0; const denied: string[] = [];
+  const monitor = new VoiceAccessMonitor({ expected: valid, request: async () => ({ enabled: true, roster: 'next' }), waiting() {}, denied: m => denied.push(m), rotate: async () => { if (++attempts === 1) throw new HttpError(409, 'changed again'); return { enabled: true, roster: 'next' }; } });
+  t.after(() => monitor.stop()); monitor.check(); await flush(); t.mock.timers.tick(3000); await flush();
+  assert.equal(attempts, 2); assert.deepEqual(denied, []);
+});
+
+test('Retry-After is respected without ending the call halfway through the rate-limit window', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let calls = 0;
+  const f = fixture(async () => { if (++calls === 1) throw new HttpError(429, 'busy', 60_000); return valid; });
+  t.after(() => f.monitor.stop()); f.monitor.check(); await flush(); t.mock.timers.tick(59_000); await flush();
+  assert.equal(calls, 1); assert.deepEqual(f.denied, []);
+  t.mock.timers.tick(1000); await flush(); assert.equal(calls, 2); assert.deepEqual(f.denied, []);
+});

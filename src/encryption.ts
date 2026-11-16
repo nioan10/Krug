@@ -21,6 +21,8 @@ export class EncryptionManager extends EventTarget {
   private stopped = false;
   private opening = new Map<string, Promise<SecretPayload>>();
   private refreshing?: Promise<EncryptionState>;
+  private decrypted = new Map<number, { signature: string; value: Promise<SecretPayload | undefined> }>();
+  private grants = new Map<number, Promise<{ grants: EncryptedEnvelope[] }>>();
   constructor(readonly user: User, readonly sessionId: string) { super(); }
   private notify() { this.dispatchEvent(new Event('change')); }
   private async mutate(work: (vault: Vault) => void) {
@@ -52,7 +54,7 @@ export class EncryptionManager extends EventTarget {
         // Persist before registering: a failed response must not strand a key on the server.
         await saveVault(this.vault);
       }
-      const { device } = await api<{ device: EncryptionDevice }>('/encryption/devices', 'POST', { publicKey: record.device.publicKey, label: record.device.label }, AbortSignal.timeout(12_000));
+      const device = remote ?? (await api<{ device: EncryptionDevice }>('/encryption/devices', 'POST', { publicKey: record.device.publicKey, label: record.device.label }, AbortSignal.timeout(12_000))).device;
       if (device.fingerprint !== record.device.fingerprint || device.userId !== this.user.id) throw Error('Ключ устройства подменён сервером.');
       record.device = device; mergePins(this.vault, { [device.id]: device.fingerprint });
       (this.vault.verified ??= {})[device.id] = device.fingerprint;
@@ -120,12 +122,30 @@ export class EncryptionManager extends EventTarget {
     }
     return value;
   }
-  async decryptMessage(message: Message) {
+  decryptMessage(message: Message) {
+    const signature = JSON.stringify([message.encrypted, message.channelId, message.user.id, message.createdAt, message.image]);
+    const cached = this.decrypted.get(message.id);
+    if (cached?.signature === signature) return cached.value;
+    const value = this.decryptMessageUncached(message);
+    this.decrypted.set(message.id, { signature, value });
+    if (this.decrypted.size > 250) this.decrypted.delete(this.decrypted.keys().next().value!);
+    value.catch(() => { if (this.decrypted.get(message.id)?.value === value) this.decrypted.delete(message.id); });
+    return value;
+  }
+  private async decryptMessageUncached(message: Message) {
     if (!message.encrypted) return undefined;
     let value: SecretPayload;
     try { value = await this.open(message.encrypted, message.channelId, 'message'); }
     catch (originalError) {
-      const grants = await api<{ grants: EncryptedEnvelope[] }>(`/messages/${message.id}/key-grants`);
+      let request = this.grants.get(message.id);
+      if (!request) {
+        request = api<{ grants: EncryptedEnvelope[] }>(`/messages/${message.id}/key-grants`);
+        this.grants.set(message.id, request);
+        if (this.grants.size > 250) this.grants.delete(this.grants.keys().next().value!);
+        const current = request;
+        setTimeout(() => { if (this.grants.get(message.id) === current) this.grants.delete(message.id); }, 15_000);
+      }
+      const grants = await request;
       let restored: SecretPayload | undefined;
       for (const envelope of grants.grants) {
         try {
@@ -150,8 +170,8 @@ export class EncryptionManager extends EventTarget {
     if (Boolean(value.image) !== Boolean(message.image)) throw Error('Состав сообщения подменён.');
     return value;
   }
-  historyChanged() { this.opening.clear(); this.notify(); }
-  stop() { this.stopped = true; this.opening.clear(); this.recovered.clear(); }
+  historyChanged(messageId: number) { this.grants.delete(messageId); this.decrypted.delete(messageId); this.notify(); }
+  stop() { this.stopped = true; this.opening.clear(); this.recovered.clear(); this.decrypted.clear(); this.grants.clear(); }
   async shareHistory(retry = false) {
     if (this.stopped || this.sharing || this.historyMigration.running || !this.state.enabled || this.pending.length) return;
     this.sharing = true;
@@ -232,7 +252,7 @@ export class EncryptionManager extends EventTarget {
       try { await api(`/encryption/rooms/${channelId}`, 'POST', envelope); result = { envelope, roster }; }
       catch (e) { if (!(e instanceof HttpError && e.status === 409)) throw e; result = await api(`/encryption/rooms/${channelId}`); }
     }
-    if (!result.envelope || result.roster !== roster || result.envelope.roster !== roster) throw Error('Состав комнаты изменился. Повторите подключение.');
+    if (!result.envelope || result.roster !== roster || result.envelope.roster !== roster) throw new HttpError(409, 'Состав комнаты изменился. Обновляем ключ.');
     const payload = await this.open(result.envelope, channelId, 'room');
     if (!payload.roomKey || base64ToBytes(payload.roomKey).length !== 32) throw Error('Некорректный ключ звонка.');
     return { key: base64ToBytes(payload.roomKey).buffer, roster };

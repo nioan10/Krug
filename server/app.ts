@@ -173,7 +173,8 @@ export async function buildApp(config: Config, media: MediaService = createMedia
         const blockedIds = new Set(blocked.map(row => row.userId));
         const removals = Object.entries(rooms).flatMap(([room, occupants]) => occupants.filter(person => {
           const lease = sessions.voice(person.identity);
-          return blockedIds.has(lease?.userId ?? person.identity) || blockedIds.has(`legacy:${person.identity}`) || (lease ? !sessions.active(lease.sessionHash) : person.identity.startsWith('session-')) || (encryption.enabled() && person.room !== `${room}.e2ee.${encryption.roster()}`);
+          const prefix = `${room}.e2ee.`;
+          return blockedIds.has(lease?.userId ?? person.identity) || blockedIds.has(`legacy:${person.identity}`) || (lease ? !sessions.active(lease.sessionHash) : person.identity.startsWith('session-')) || (encryption.enabled() && (!person.room?.startsWith(prefix) || !encryption.callRosterAllowed(person.room.slice(prefix.length))));
         }).map(person => media.removeParticipant(person.room ?? room, person.identity)));
         if ((await Promise.allSettled(removals)).some(result => result.status === 'rejected')) ok = false;
       } catch { ok = false; }

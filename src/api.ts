@@ -7,7 +7,7 @@ export type Invite = { id: string; expiresAt: number; usedAt: number | null; cre
 export type Member = User & { createdAt: number; disabledAt: number | null };
 export type VoiceOccupant = User & { identity?: string; microphoneEnabled: boolean; deafened: boolean | null; afk?: boolean };
 export type VoicePresence = { rooms: Record<string, VoiceOccupant[]>; available: boolean };
-export class HttpError extends Error { constructor(public status: number, message: string) { super(message); } }
+export class HttpError extends Error { constructor(public status: number, message: string, public retryAfterMs = 0) { super(message); } }
 export function isTransientRequestError(error: unknown) {
   return error instanceof TypeError || (error instanceof DOMException && ['AbortError', 'TimeoutError'].includes(error.name)) ||
     (error instanceof HttpError && (error.status === 408 || error.status === 429 || (error.status >= 500 && error.status < 600)));
@@ -19,7 +19,7 @@ export async function api<T>(path: string, method = 'GET', body?: unknown, signa
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const result = await response.json().catch(() => ({}));
-  if (!response.ok) throw new HttpError(response.status, result.message || 'Не удалось выполнить запрос.');
+  if (!response.ok) throw new HttpError(response.status, result.message || 'Не удалось выполнить запрос.', Math.min(120_000, Math.max(0, Number(response.headers.get('Retry-After')) || 0) * 1000));
   return result;
 }
 export const errorText = (error: unknown) => error instanceof Error ? error.message : 'Что-то пошло не так.';

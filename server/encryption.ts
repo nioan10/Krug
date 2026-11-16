@@ -34,6 +34,21 @@ export function registerEncryption(app: FastifyInstance, store: ReturnType<typeo
     FROM encryption_devices d JOIN sessions s ON s.hash=d.sessionHash JOIN users u ON u.id=d.userId
     WHERE s.expiresAt>? AND u.disabledAt IS NULL ORDER BY d.id`).all(Date.now()) as unknown as EncryptionDevice[];
   const roster = () => digest(JSON.stringify(devices().map(d => [d.id, d.fingerprint])));
+  const retiringCalls = new Map<string, number>();
+  function callRosterAllowed(previous: string) {
+    if (previous === roster()) return true;
+    const saved = db.prepare('SELECT devices FROM encryption_rosters WHERE hash=?').get(previous) as { devices: string } | undefined;
+    if (!saved) return false;
+    const active = new Set(devices().map(d => d.id));
+    const original = JSON.parse(saved.devices) as string[];
+    // Only additions get a short handover. Revoked/expired devices invalidate the old room immediately.
+    if (!original.length || original.some(id => !active.has(id))) return false;
+    if (!retiringCalls.has(previous)) {
+      if (retiringCalls.size >= 256) return false;
+      retiringCalls.set(previous, Date.now() + 25_000);
+    }
+    return Date.now() < retiringCalls.get(previous)!;
+  }
   const changed = () => broadcast({ type: 'encryption-changed', roster: roster(), enabled: enabled() });
   const device = (id: string) => db.prepare(`SELECT d.id,d.userId,COALESCE(u.displayName,'Удалённый участник') AS name,d.label,d.publicKey,d.fingerprint,d.createdAt,d.identity
     FROM encryption_devices d LEFT JOIN users u ON u.id=d.userId WHERE d.id=?`).get(id) as EncryptionDevice | undefined;
@@ -61,7 +76,7 @@ export function registerEncryption(app: FastifyInstance, store: ReturnType<typeo
     const id = z.object({ id: z.string().max(64) }).parse(req.params).id;
     return db.prepare('SELECT COUNT(*) AS count FROM messages WHERE channelId=? AND encrypted IS NULL').get(id);
   });
-  app.get('/api/encryption', { preHandler: auth }, async req => {
+  app.get('/api/encryption', { preHandler: auth, config: { rateLimit: { max: 180, timeWindow: '1 minute' } } }, async req => {
     const current = db.prepare('SELECT id FROM encryption_devices WHERE sessionHash=?').get(req.sessionHash!) as { id: string } | undefined;
     return { enabled: enabled(), automatic, roster: roster(), devices: devices().map(d => ({ ...d, current: d.id === current?.id })) };
   });
@@ -92,11 +107,11 @@ export function registerEncryption(app: FastifyInstance, store: ReturnType<typeo
     const found = device(id); if (!found) throw new ApiError(404, 'Ключ не найден.'); return { device: found };
   });
   const roomId = (req: FastifyRequest) => { const id = z.object({ id: z.string().min(1).max(64) }).parse(req.params).id; if (store.channel(id)?.kind !== 'voice') throw new ApiError(404, 'Комната не найдена.'); return id; };
-  app.get('/api/encryption/rooms/:id', { preHandler: auth }, async req => {
+  app.get('/api/encryption/rooms/:id', { preHandler: auth, config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async req => {
     own(req); const row = db.prepare('SELECT envelope FROM encryption_rooms WHERE channelId=? AND roster=?').get(roomId(req), roster()) as { envelope: string } | undefined;
     return { envelope: row ? JSON.parse(row.envelope) : null, roster: roster() };
   });
-  app.post('/api/encryption/rooms/:id', { preHandler: auth, bodyLimit: 120_000 }, async req => {
+  app.post('/api/encryption/rooms/:id', { preHandler: auth, bodyLimit: 120_000, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async req => {
     const envelope = validate(req, req.body);
     const id = roomId(req);
     const inserted = db.prepare('INSERT OR IGNORE INTO encryption_rooms VALUES (?,?,?)').run(id, envelope.roster, JSON.stringify(envelope));
@@ -115,7 +130,7 @@ export function registerEncryption(app: FastifyInstance, store: ReturnType<typeo
       ))) ORDER BY m.id LIMIT 20`).all(after, active, Number(retry)) as { id: number }[];
     return { messages: rows.map(row => store.message(row.id)) };
   });
-  app.get('/api/messages/:id/key-grants', { preHandler: auth }, async req => {
+  app.get('/api/messages/:id/key-grants', { preHandler: auth, config: { rateLimit: { max: 180, timeWindow: '1 minute' } } }, async req => {
     const id = z.object({ id: z.coerce.number().int().positive() }).parse(req.params).id;
     const rows = db.prepare(`SELECT g.envelope FROM encryption_history_grants g WHERE g.messageId=? AND EXISTS (
       SELECT 1 FROM json_each(g.recipients) r JOIN encryption_devices d ON d.id=r.value WHERE d.userId=?
@@ -145,5 +160,5 @@ export function registerEncryption(app: FastifyInstance, store: ReturnType<typeo
     } catch (e) { db.exec('ROLLBACK'); throw e; }
     broadcast({ type: 'message', message: store.message(id) }); return { ok: true };
   });
-  return { enabled, devices, roster, changed, own, validate, cipherImage };
+  return { enabled, devices, roster, callRosterAllowed, changed, own, validate, cipherImage };
 }
