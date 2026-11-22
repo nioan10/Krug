@@ -32,7 +32,7 @@ self.addEventListener('fetch', event => {
   // Credentials, chat history, voice tokens and API responses must stay out of Cache Storage.
   if (event.request.method !== 'GET' || url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;
   if (url.pathname === BOOTSTRAP) {
-    event.respondWith((async () => (await caches.open(CACHE)).match(BOOTSTRAP) || fetch(event.request))());
+    event.respondWith((async () => await (await caches.open(CACHE)).match(BOOTSTRAP) || fetch(event.request))());
     return;
   }
   if (event.request.mode === 'navigate') {
@@ -48,5 +48,5 @@ self.addEventListener('fetch', event => {
     })());
     return;
   }
-  event.respondWith((async () => (await caches.open(await pinnedCache())).match(url.pathname) || fetch(event.request))());
+  event.respondWith((async () => await (await caches.open(await pinnedCache())).match(url.pathname) || fetch(event.request))());
 });

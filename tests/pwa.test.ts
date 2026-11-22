@@ -50,3 +50,29 @@ test('service worker keeps the old shell across automatic activation until expli
   assert.match(await navigate(), /new/);
   assert.ok(stores.has('krug-static-old'));
 });
+
+test('service worker fetches uncached microphone scripts and missing update notices, preserving cached responses', async () => {
+  const handlers: Record<string, (event: any) => void> = {};
+  const stored = new Map<string, Response>([['/cached.js', new Response('cached')]]);
+  const requested: string[] = [];
+  vm.runInNewContext(readFileSync('scripts/sw-template.js', 'utf8').replace('__VERSION__', 'test').replace('__PRECACHE__', '[]'), {
+    self: { location: { origin: 'https://chat.example.com' }, addEventListener(type: string, handler: (event: any) => void) { handlers[type] = handler; } },
+    URL, Response, Headers,
+    caches: { keys: async () => ['krug-static-test'], open: async () => ({
+      match: async (key: string) => stored.get(key)?.clone(),
+      put: async (key: string, response: Response) => { stored.set(key, response); },
+    }) },
+    fetch: async (request: Request) => { requested.push(request.url); return new Response('network'); },
+  });
+  const read = async (path: string) => {
+    let result!: Promise<Response>;
+    handlers.fetch({ request: new Request(`https://chat.example.com${path}`), respondWith(response: Promise<Response>) { result = response; } });
+    const response = await result;
+    assert.ok(response instanceof Response, 'cache miss must resolve to a Response, not undefined');
+    return response.text();
+  };
+  assert.equal(await read('/cached.js'), 'cached'); assert.deepEqual(requested, []);
+  assert.equal(await read('/microphone-gate-worklet.js'), 'network');
+  assert.equal(await read('/__krug_update_notice__.js'), 'network');
+  assert.deepEqual(requested, ['https://chat.example.com/microphone-gate-worklet.js', 'https://chat.example.com/__krug_update_notice__.js']);
+});
