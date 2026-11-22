@@ -6,6 +6,7 @@ import { Mic } from 'lucide-react';
 import { incomingLevel, level, type AudioLevels } from './audio-levels';
 import { MicrophoneGain } from './MicrophoneGain';
 import { IncomingGain } from './IncomingGain';
+import { microphoneErrorMessage, withMicrophoneRecovery, type MicrophoneStage } from './microphone-control';
 
 function ControlledAudio({ trackRef, volume, muted }: { trackRef: TrackReference; volume: number; muted: boolean }) {
   const room = useRoomContext();
@@ -45,6 +46,7 @@ export function MicrophoneToggle({ volume, notify }: { volume: number; notify: (
   const { localParticipant, microphoneTrack, isMicrophoneEnabled } = useLocalParticipant();
   useEffect(() => { window.KrugAndroidNative?.setMicrophoneActive(isMicrophoneEnabled); return () => window.KrugAndroidNative?.setMicrophoneActive(false); }, [isMicrophoneEnabled]);
   const [busy, setBusy] = useState(false);
+  const toggling = useRef(false);
   const latestVolume = useRef(volume); latestVolume.current = volume;
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -54,26 +56,35 @@ export function MicrophoneToggle({ volume, notify }: { volume: number; notify: (
     if (processor instanceof MicrophoneGain) processor.setLevel(volume);
   }, [volume, microphoneTrack?.track]);
   async function toggle() {
-    if (busy) return;
+    if (toggling.current) return;
+    toggling.current = true;
     setBusy(true);
     let created: LocalAudioTrack | undefined;
+    let stage: MicrophoneStage = isMicrophoneEnabled ? 'mute' : 'capture';
+    const recovered = () => notify('Выбранный микрофон недоступен. Включён микрофон по умолчанию.');
     try {
       if (isMicrophoneEnabled) await localParticipant.setMicrophoneEnabled(false);
       else {
-        await room.startAudio();
+        // Playback may reject (or wait for another gesture) independently of microphone access.
+        // LiveKit's StartAudio button handles playback recovery; it must not block speaking.
+        void room.startAudio().catch(() => {});
         const existing = localParticipant.getTrackPublication(Track.Source.Microphone)?.track;
         if (existing instanceof LocalAudioTrack) {
           const processor = existing.getProcessor();
           if (processor instanceof MicrophoneGain) processor.setLevel(latestVolume.current);
-          else await existing.setProcessor(new MicrophoneGain(latestVolume.current));
+          else { stage = 'processor'; await existing.setProcessor(new MicrophoneGain(latestVolume.current)); }
           if (!mounted.current) return;
-          await localParticipant.setMicrophoneEnabled(true);
+          stage = 'unmute';
+          await withMicrophoneRecovery(room, () => localParticipant.setMicrophoneEnabled(true), () => mounted.current, recovered);
         } else {
-          const tracks = await localParticipant.createTracks({ audio: true });
+          const tracks = await withMicrophoneRecovery(room, () => localParticipant.createTracks({ audio: true }), () => mounted.current, recovered);
           created = tracks.find((track): track is LocalAudioTrack => track instanceof LocalAudioTrack);
           if (!created) throw new Error('No microphone');
+          if (!mounted.current) { created.stop(); return; }
+          stage = 'processor';
           await created.setProcessor(new MicrophoneGain(latestVolume.current));
           if (!mounted.current) { created.stop(); return; }
+          stage = 'publish';
           await localParticipant.publishTrack(created, { source: Track.Source.Microphone });
           if (!mounted.current) { await localParticipant.unpublishTrack(created, true); created = undefined; return; }
           const processor = created.getProcessor();
@@ -81,8 +92,12 @@ export function MicrophoneToggle({ volume, notify }: { volume: number; notify: (
           created = undefined;
         }
       }
-    } catch { created?.stop(); if (mounted.current) notify('Не удалось переключить микрофон. Проверьте устройство и разрешение браузера.'); }
-    finally { if (mounted.current) setBusy(false); }
+    } catch (error) {
+      created?.stop();
+      console.warn('Microphone operation failed', stage, error);
+      if (mounted.current) notify(microphoneErrorMessage(error, stage));
+    }
+    finally { toggling.current = false; if (mounted.current) setBusy(false); }
   }
   return <button data-lk-enabled={isMicrophoneEnabled} disabled={busy} aria-label="Включить или выключить микрофон" aria-pressed={isMicrophoneEnabled} title="Микрофон" onClick={() => void toggle()}><Mic size={21} /></button>;
 }

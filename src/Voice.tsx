@@ -18,6 +18,8 @@ import { VoiceAccessMonitor, type VoiceAccess } from './voice-access';
 import { VoiceRekey } from './voice-rekey';
 import { useEncryption } from './EncryptionSettings';
 import { MicrophoneActivation } from './MicrophoneActivation';
+import { microphoneErrorMessage } from './microphone-control';
+import type { MediaDeviceFailure } from 'livekit-client';
 
 export type Call = { channel: Channel; token: string; url: string; e2ee?: { key: ArrayBuffer; roster: string } };
 const options: RoomOptions = {
@@ -213,7 +215,10 @@ export function Voice({ call, presence, onLeave, notify }: { call: Call; presenc
   }, []);
   const onDisconnected = useCallback(() => { if (active.current && !rotating.current) onLeave(); }, [onLeave]);
   const onError = useCallback(() => notify('Не удалось подключиться к медиасерверу. Проверьте соединение и попробуйте снова.'), [notify]);
-  const onMediaDeviceFailure = useCallback(() => notify('Браузер не дал доступ к устройству. Можно остаться слушателем и включить микрофон позже.'), [notify]);
+  const onMediaDeviceFailure = useCallback((failure?: MediaDeviceFailure, kind?: MediaDeviceKind) => {
+    const name = failure === 'PermissionDenied' ? 'NotAllowedError' : failure === 'NotFound' ? 'NotFoundError' : failure === 'DeviceInUse' ? 'NotReadableError' : '';
+    notify(kind === 'audioinput' ? microphoneErrorMessage({ name }, 'capture') : 'Не удалось открыть устройство. Проверьте его подключение и разрешение на доступ.');
+  }, [notify]);
   if (!room) return <div className="call-content">Подключаемся…</div>;
   return <LiveKitRoom room={room} token={call.token} serverUrl={call.url} connect audio={false} video={false} onDisconnected={onDisconnected} onError={onError} onMediaDeviceFailure={onMediaDeviceFailure}><CallContent room={room} onLeave={onLeave} notify={notify} channelId={call.channel.id} presence={presence} checkingAccess={checkingAccess} /></LiveKitRoom>;
 }
